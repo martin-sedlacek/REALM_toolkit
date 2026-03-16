@@ -7,6 +7,7 @@ import numpy as np
 import io
 import dashboard_utils
 from collections import defaultdict
+import pandas as pd
 
 st.set_page_config(layout="wide", page_title="Experiment Dashboard")
 
@@ -89,6 +90,18 @@ def _select_experiment(path, has_children):
     if has_children:
         _toggle_folder(path)
 
+def has_experiments_recursively(base_path):
+    """Check if the given path or any of its subdirectories contain an experiment."""
+    if get_cached_is_experiment_folder(base_path):
+        return True
+    
+    subdirs = get_cached_subdirectories(base_path)
+    for d in subdirs:
+        full_path = os.path.join(base_path, d)
+        if has_experiments_recursively(full_path):
+            return True
+    return False
+
 # --- Tree rendering ---
 def render_tree(base_path, depth=0):
     """Render a collapsible directory tree in the sidebar with proper indentation."""
@@ -101,9 +114,17 @@ def render_tree(base_path, depth=0):
 
     for d in subdirs:
         full_path = os.path.join(base_path, d)
+        
+        # Check if this branch has any experiments
+        if not has_experiments_recursively(full_path):
+            continue
+            
         is_exp = get_cached_is_experiment_folder(full_path)
         sub_subdirs = get_cached_subdirectories(full_path)
-        has_children = len(sub_subdirs) > 0
+        
+        # Do not treat experiment folders as having children in the tree to prevent them from rolling down
+        has_children = len(sub_subdirs) > 0 and not is_exp
+        
         is_expanded = full_path in st.session_state.expanded_folders
         is_selected = st.session_state.selected_experiment == full_path
 
@@ -122,7 +143,7 @@ def render_tree(base_path, depth=0):
                 label,
                 key=f"tree_{full_path}",
                 on_click=_select_experiment,
-                args=(full_path, has_children),
+                args=(full_path, False),
             )
         elif has_children:
             label = f"{indent}{chevron} 📁 {d}"
@@ -133,7 +154,7 @@ def render_tree(base_path, depth=0):
                 args=(full_path,),
             )
         else:
-            # Non-experiment leaf folder
+            # Non-experiment leaf folder (should not be reached if has_experiments_recursively is working correctly)
             st.sidebar.markdown(
                 f"<div style='padding-left:{depth * 1.5}rem; font-size:0.85rem; color:gray; "
                 f"padding-top:0.1rem; padding-bottom:0.1rem;'>\u2003 📁 {d}</div>",
@@ -200,12 +221,147 @@ def render_video_section(selected_path, selected_tasks, selected_perts):
             st.video(video_path)
             st.caption(os.path.basename(video_path))
 
-# ===== SIDEBAR =====
-st.sidebar.title("Experiment Browser")
-render_tree(LOGS_DIR)
+def plot_stage_frequency(df):
+    if df is None or df.empty or 'stage' not in df.columns or 'task_progression' not in df.columns:
+        st.info("No data or required columns ('stage', 'task_progression') found for this plot.")
+        return
 
-# Sidebar Filters
-st.sidebar.markdown("---")
+    df_plot = df.copy()
+    
+    # Simplify stage labels: 'Success' remains 'Success', others take the first word
+    df_plot['simplified_stage'] = df_plot['stage'].apply(
+        lambda x: 'Success' if str(x).lower() == 'success' else str(x).split('_')[0].capitalize()
+    )
+
+    # Calculate average task progression for each simplified stage
+    # This will be used for ordering the bars
+    stage_progression = df_plot.groupby('simplified_stage')['task_progression'].mean().sort_values()
+    
+    # Get frequency (counts) of each simplified stage
+    stage_counts = df_plot['simplified_stage'].value_counts()
+    
+    total_rows = len(df_plot)
+    if total_rows == 0:
+        st.info("No data to plot stage frequency.")
+        return
+
+    # Order labels by average task progression
+    ordered_labels = stage_progression.index.tolist()
+    
+    # Calculate proportions
+    proportions = [stage_counts.get(l, 0) / total_rows for l in ordered_labels]
+    
+    # Assign colors based on task progression, matching the other plot
+    unique_tps = sorted(stage_progression.unique())
+    success_tp = stage_progression.get('Success', 1.0)
+    failure_tps = [tp for tp in unique_tps if tp != success_tp]
+    
+    cmap = plt.get_cmap('Reds')
+    tp_to_color = {}
+    num_failure_tps = len(failure_tps)
+    for i, tp in enumerate(failure_tps):
+        tp_to_color[tp] = cmap((i + 1) / (num_failure_tps + 1))
+        
+    color_dict = {'Success': 'lightgreen'}
+    for stage in ordered_labels:
+        if stage == 'Success':
+            continue
+        tp = stage_progression[stage]
+        color_dict[stage] = tp_to_color.get(tp, 'darkred')
+        
+    colors = [color_dict[label] for label in ordered_labels]
+    
+    fig, ax = plt.subplots(figsize=(5, 4))
+    ax.bar(ordered_labels, proportions, color=colors)
+    ax.set_ylim(0, 1) # Set y-axis range from 0 to 1 as requested
+    ax.set_ylabel("Frequency (Proportion of Total Data)")
+    ax.set_xlabel("")
+    plt.xticks(rotation=45, ha='right')
+    
+    buf = io.BytesIO()
+    fig.tight_layout()
+    fig.savefig(buf, format="png")
+    plt.close(fig)
+    st.image(buf)
+
+def plot_stage_frequency_per_task(df):
+    if df is None or df.empty or 'stage' not in df.columns or 'task' not in df.columns or 'task_progression' not in df.columns:
+        st.info("No data or required columns ('stage', 'task', 'task_progression') found for this plot.")
+        return
+
+    df_plot = df.copy()
+    
+    # Simplify stage labels: 'Success' remains 'Success', others take the first word
+    df_plot['simplified_stage'] = df_plot['stage'].apply(
+        lambda x: 'Success' if str(x).lower() == 'success' else str(x).split('_')[0].capitalize()
+    )
+    
+    # Calculate average task progression for each simplified stage (globally) to determine color mapping
+    stage_progression = df_plot.groupby('simplified_stage')['task_progression'].mean().sort_values()
+    ordered_stages = stage_progression.index.tolist()
+
+    # Create a crosstab of task vs simplified_stage and normalize by row to get frequencies
+    ct = pd.crosstab(df_plot['task'], df_plot['simplified_stage'], normalize='index')
+    
+    # Ensure 'Success' is a column if it doesn't exist, to keep coloring consistent
+    if 'Success' not in ct.columns:
+        ct['Success'] = 0.0
+
+    # Ensure all ordered stages are present in ct to maintain consistency
+    for stage in ordered_stages:
+        if stage not in ct.columns:
+            ct[stage] = 0.0
+            
+    # Reorder the columns of ct according to the globally calculated task progression order
+    ct = ct[ordered_stages]
+
+    # Assign colors based on task progression, exactly as in plot_stage_frequency
+    unique_tps = sorted(stage_progression.unique())
+    success_tp = stage_progression.get('Success', 1.0)
+    failure_tps = [tp for tp in unique_tps if tp != success_tp]
+    
+    cmap = plt.get_cmap('Reds')
+    tp_to_color = {}
+    num_failure_tps = len(failure_tps)
+    for i, tp in enumerate(failure_tps):
+        tp_to_color[tp] = cmap((i + 1) / (num_failure_tps + 1))
+        
+    color_dict = {'Success': 'lightgreen'}
+    for stage in ordered_stages:
+        if stage == 'Success':
+            continue
+        tp = stage_progression[stage]
+        color_dict[stage] = tp_to_color.get(tp, 'darkred')
+
+    plot_colors = [color_dict[col] for col in ordered_stages]
+
+    # Use the color map to create legend elements in the same order
+    from matplotlib.patches import Patch
+    legend_elements = [Patch(facecolor=color_dict[stage], label=stage) for stage in ordered_stages]
+
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    
+    # Plot stacked bar chart using the ordered columns and mapped colors
+    ct.plot(kind='bar', stacked=True, ax=ax, color=plot_colors)
+    
+    ax.set_ylim(0, 1)
+    ax.set_ylabel("Frequency")
+    ax.set_xlabel("")
+    plt.xticks(rotation=45, ha='right')
+    
+    # Move legend outside, using custom legend elements to enforce matching color/label
+    ax.legend(handles=legend_elements, title='Stage', bbox_to_anchor=(1.05, 1), loc='upper left')
+    
+    buf = io.BytesIO()
+    fig.tight_layout()
+    fig.savefig(buf, format="png")
+    plt.close(fig)
+    st.image(buf)
+
+
+# ===== SIDEBAR =====
+# Sidebar Filters (Moved to top)
 st.sidebar.header("Filter Data & Videos")
 
 with st.sidebar.expander("Filter by Task", expanded=False):
@@ -228,6 +384,11 @@ with st.sidebar.expander("Filter by Perturbation", expanded=False):
             if st.checkbox(pert, key=f"chk_pert_{pert}"):
                 selected_perts.append(pert)
 
+st.sidebar.markdown("---")
+
+st.sidebar.title("Experiment Browser")
+render_tree(LOGS_DIR)
+
 # ===== MAIN CONTENT =====
 if st.session_state.selected_experiment and os.path.exists(st.session_state.selected_experiment):
     # Reset video page when experiment changes
@@ -247,10 +408,7 @@ if st.session_state.selected_experiment and os.path.exists(st.session_state.sele
 
     st.title("Experiment Dashboard")
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Experiment", experiment_name)
-    c2.metric("Model", model_name)
-    c3.metric("Run ID", run_id)
+    st.markdown(f"<h3><b>Experiment:</b> {experiment_name}</h3><h3><b>Model:</b> {model_name}</h3><h3><b>Run ID:</b> {run_id}</h3>", unsafe_allow_html=True)
 
     st.divider()
 
@@ -277,19 +435,30 @@ if st.session_state.selected_experiment and os.path.exists(st.session_state.sele
                 perts_indices = metadata.get("perturbation_ids", [])
                 required_repeats = metadata.get("repeats", 0)
 
-                st.write(f"**Target Configuration (from {experiment_name}/metadata.json):** Tasks: {tasks_indices}, Perturbations: {perts_indices}, Repeats: {required_repeats}")
+                st.markdown(f"**Target Configuration (from {experiment_name}/metadata.json):**\n"
+                            f"* Tasks: {tasks_indices}\n"
+                            f"* Perturbations: {perts_indices}\n"
+                            f"* Repeats: {required_repeats}")
 
                 status, msg = dashboard_utils.check_experiment_status(raw_df, tasks_indices, perts_indices, required_repeats)
 
                 if status:
-                    st.success("✅ " + msg)
+                    st.success("✅ All required tasks and perturbations evaluated with sufficient samples.")
                 else:
-                    st.error("❌ " + msg)
+                    st.error("❌ Missing evaluations.")
+                    with st.expander("Missing Combinations", expanded=False):
+                        # The original error message returned from check_experiment_status starts with "Missing evaluations:\n"
+                        # We split it to only get the actual missing combinations
+                        missing_lines = msg.split("Missing evaluations:\n")
+                        if len(missing_lines) > 1:
+                            st.write(missing_lines[1])
+                        else:
+                             st.write(msg)
 
                 # Show completed combinations (from RAW data)
                 completed = dashboard_utils.get_completed_experiments(raw_df, required_repeats)
                 if completed:
-                    with st.expander("Completed Combinations", expanded=True):
+                    with st.expander("Completed Combinations", expanded=False):
                         grouped = defaultdict(list)
                         for t, p in completed:
                             grouped[t].append(p)
@@ -313,6 +482,24 @@ if st.session_state.selected_experiment and os.path.exists(st.session_state.sele
             c1, c2 = st.columns(2)
 
             with c1:
+                st.subheader("Success Rate per Task")
+                if 'binary_SR' in df.columns:
+                    task_sr = df.groupby('task')['binary_SR'].mean().reset_index()
+
+                    fig, ax = plt.subplots(figsize=(5, 4))
+                    ax.bar(task_sr['task'], task_sr['binary_SR'], color='lightgreen')
+                    ax.set_ylim(0, 1)
+                    ax.set_ylabel("Success Rate")
+                    ax.set_xlabel("")
+                    plt.xticks(rotation=45, ha='right')
+
+                    buf = io.BytesIO()
+                    fig.tight_layout()
+                    fig.savefig(buf, format="png")
+                    plt.close(fig)
+                    st.image(buf)
+
+            with c2:
                 st.subheader("Success Rate per Perturbation")
                 df['clean_pert'] = df['perturbation'].apply(lambda x: x.replace("['", "").replace("']", "") if isinstance(x, str) else str(x))
 
@@ -323,7 +510,7 @@ if st.session_state.selected_experiment and os.path.exists(st.session_state.sele
                     ax.bar(pert_sr['clean_pert'], pert_sr['binary_SR'], color='skyblue')
                     ax.set_ylim(0, 1)
                     ax.set_ylabel("Success Rate")
-                    ax.set_xlabel("Perturbation")
+                    ax.set_xlabel("")
                     plt.xticks(rotation=45, ha='right')
 
                     buf = io.BytesIO()
@@ -333,24 +520,57 @@ if st.session_state.selected_experiment and os.path.exists(st.session_state.sele
                     st.image(buf)
                 else:
                     st.info("No binary_SR column found for plots.")
+            
+            st.divider()
+            c3, c4 = st.columns(2)
 
-            with c2:
-                st.subheader("Success Rate per Task")
-                if 'binary_SR' in df.columns:
-                    task_sr = df.groupby('task')['binary_SR'].mean().reset_index()
-
+            with c3:
+                st.subheader("Task Progression per Task")
+                if 'task_progression' in df.columns:
+                    task_prog = df.groupby('task')['task_progression'].mean().reset_index()
                     fig, ax = plt.subplots(figsize=(5, 4))
-                    ax.bar(task_sr['task'], task_sr['binary_SR'], color='lightgreen')
+                    ax.bar(task_prog['task'], task_prog['task_progression'], color='lightcoral')
                     ax.set_ylim(0, 1)
-                    ax.set_ylabel("Success Rate")
-                    ax.set_xlabel("Task")
+                    ax.set_ylabel("Task Progression")
+                    ax.set_xlabel("")
                     plt.xticks(rotation=45, ha='right')
-
                     buf = io.BytesIO()
                     fig.tight_layout()
                     fig.savefig(buf, format="png")
                     plt.close(fig)
                     st.image(buf)
+                else:
+                    st.info("No task_progression column found for plots.")
+            
+            with c4:
+                st.subheader("Task Progression per Perturbation")
+                if 'task_progression' in df.columns:
+                    pert_prog = df.groupby('clean_pert')['task_progression'].mean().reset_index()
+                    fig, ax = plt.subplots(figsize=(5, 4))
+                    ax.bar(pert_prog['clean_pert'], pert_prog['task_progression'], color='plum')
+                    ax.set_ylim(0, 1)
+                    ax.set_ylabel("Task Progression")
+                    ax.set_xlabel("")
+                    plt.xticks(rotation=45, ha='right')
+                    buf = io.BytesIO()
+                    fig.tight_layout()
+                    fig.savefig(buf, format="png")
+                    plt.close(fig)
+                    st.image(buf)
+                else:
+                    st.info("No task_progression column found for plots.")
+
+            st.divider()
+            
+            c5, c6 = st.columns(2)
+            with c5:
+                st.subheader("Failure Stage Frequency")
+                plot_stage_frequency(df)
+            
+            with c6:
+                st.subheader("Failure Stage Frequency per Task")
+                plot_stage_frequency_per_task(df)
+
         else:
             if raw_df is not None:
                 st.info("No data matches the selected filters.")
