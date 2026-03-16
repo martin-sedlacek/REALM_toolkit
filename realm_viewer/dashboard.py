@@ -251,7 +251,17 @@ def plot_stage_frequency(df):
         st.info("No data or required columns ('stage', 'task_progression') found for this plot.")
         return
 
-    df_plot = df.copy()
+    # Filter out SB-VRB perturbation for this specific plot
+    if 'perturbation' in df.columns:
+        df_filtered = df[~df['perturbation'].astype(str).str.contains('SB-VRB')].copy()
+    else:
+        df_filtered = df.copy()
+
+    if df_filtered.empty:
+        st.info("No data available after filtering out SB-VRB.")
+        return
+
+    df_plot = df_filtered.copy()
     
     # Simplify stage labels: 'Success' remains 'Success', others take the first word
     df_plot['simplified_stage'] = df_plot['stage'].apply(
@@ -274,7 +284,7 @@ def plot_stage_frequency(df):
     colors = [color_dict[label] for label in ordered_labels]
     
     fig, ax = plt.subplots(figsize=(5, 4))
-    ax.bar(ordered_labels, proportions, color=colors)
+    ax.bar(ordered_labels, proportions, color=colors, edgecolor='none')
     ax.set_ylim(0, 1) # Set y-axis range from 0 to 1 as requested
     ax.set_ylabel("Frequency (Proportion of Total Data)")
     ax.set_xlabel("")
@@ -291,7 +301,17 @@ def plot_stage_frequency_per_task(df):
         st.info("No data or required columns ('stage', 'task', 'task_progression') found for this plot.")
         return
 
-    df_plot = df.copy()
+    # Filter out SB-VRB perturbation for this specific plot
+    if 'perturbation' in df.columns:
+        df_filtered = df[~df['perturbation'].astype(str).str.contains('SB-VRB')].copy()
+    else:
+        df_filtered = df.copy()
+
+    if df_filtered.empty:
+        st.info("No data available after filtering out SB-VRB.")
+        return
+
+    df_plot = df_filtered.copy()
     
     # Simplify stage labels: 'Success' remains 'Success', others take the first word
     df_plot['simplified_stage'] = df_plot['stage'].apply(
@@ -320,7 +340,8 @@ def plot_stage_frequency_per_task(df):
     fig, ax = plt.subplots(figsize=(8, 6))
     
     # Plot stacked bar chart using the ordered columns and mapped colors
-    ct.plot(kind='bar', stacked=True, ax=ax, color=plot_colors)
+    # Added linewidth=0 to prevent drawing visible edges for 0-height segments
+    ct.plot(kind='bar', stacked=True, ax=ax, color=plot_colors, linewidth=0)
     
     ax.set_ylim(0, 1)
     ax.set_ylabel("Frequency")
@@ -348,8 +369,17 @@ def plot_task_progression_timesteps_per_task(df):
         st.info("No data or required columns ('task', 'task_progression_timestamps') found for this plot.")
         return
 
-    # Use all rows, not just successful ones
-    df_plot = df.copy()
+    # Filter out SB-VRB perturbation for this specific plot
+    if 'perturbation' in df.columns:
+        df_filtered = df[~df['perturbation'].astype(str).str.contains('SB-VRB')].copy()
+    else:
+        df_filtered = df.copy()
+
+    if df_filtered.empty:
+        st.info("No data available after filtering out SB-VRB.")
+        return
+
+    df_plot = df_filtered.copy()
     
     if df_plot.empty:
         st.info("No data available to plot average timesteps.")
@@ -404,7 +434,8 @@ def plot_task_progression_timesteps_per_task(df):
         cmap = plt.get_cmap('viridis')
         colors = [cmap(i / max_stages) for i in range(max_stages)]
         
-        mean_durations.plot(kind='bar', stacked=True, ax=ax, color=colors)
+        # Added linewidth=0 to prevent drawing visible edges for 0-height segments
+        mean_durations.plot(kind='bar', stacked=True, ax=ax, color=colors, linewidth=0)
         
         ax.set_ylabel("Average Timesteps")
         ax.set_xlabel("")
@@ -640,7 +671,7 @@ if st.session_state.selected_experiment and os.path.exists(st.session_state.sele
             
             c7, c8 = st.columns(2)
             with c7:
-                st.subheader("Time to Completion per Task")
+                st.subheader("Time to Completion per Task (Successful Only)")
                 if 'task_progression' in df.columns:
                     # Look for the correct timestamp column
                     col_name = None
