@@ -8,6 +8,7 @@ import io
 import dashboard_utils
 from collections import defaultdict
 import pandas as pd
+import ast
 
 st.set_page_config(layout="wide", page_title="Experiment Dashboard")
 
@@ -221,37 +222,11 @@ def render_video_section(selected_path, selected_tasks, selected_perts):
             st.video(video_path)
             st.caption(os.path.basename(video_path))
 
-def plot_stage_frequency(df):
-    if df is None or df.empty or 'stage' not in df.columns or 'task_progression' not in df.columns:
-        st.info("No data or required columns ('stage', 'task_progression') found for this plot.")
-        return
-
-    df_plot = df.copy()
-    
-    # Simplify stage labels: 'Success' remains 'Success', others take the first word
-    df_plot['simplified_stage'] = df_plot['stage'].apply(
-        lambda x: 'Success' if str(x).lower() == 'success' else str(x).split('_')[0].capitalize()
-    )
-
+def get_stage_progression_and_colors(df_plot):
     # Calculate average task progression for each simplified stage
-    # This will be used for ordering the bars
     stage_progression = df_plot.groupby('simplified_stage')['task_progression'].mean().sort_values()
-    
-    # Get frequency (counts) of each simplified stage
-    stage_counts = df_plot['simplified_stage'].value_counts()
-    
-    total_rows = len(df_plot)
-    if total_rows == 0:
-        st.info("No data to plot stage frequency.")
-        return
-
-    # Order labels by average task progression
     ordered_labels = stage_progression.index.tolist()
     
-    # Calculate proportions
-    proportions = [stage_counts.get(l, 0) / total_rows for l in ordered_labels]
-    
-    # Assign colors based on task progression, matching the other plot
     unique_tps = sorted(stage_progression.unique())
     success_tp = stage_progression.get('Success', 1.0)
     failure_tps = [tp for tp in unique_tps if tp != success_tp]
@@ -269,6 +244,33 @@ def plot_stage_frequency(df):
         tp = stage_progression[stage]
         color_dict[stage] = tp_to_color.get(tp, 'darkred')
         
+    return stage_progression, ordered_labels, color_dict
+
+def plot_stage_frequency(df):
+    if df is None or df.empty or 'stage' not in df.columns or 'task_progression' not in df.columns:
+        st.info("No data or required columns ('stage', 'task_progression') found for this plot.")
+        return
+
+    df_plot = df.copy()
+    
+    # Simplify stage labels: 'Success' remains 'Success', others take the first word
+    df_plot['simplified_stage'] = df_plot['stage'].apply(
+        lambda x: 'Success' if str(x).lower() == 'success' else str(x).split('_')[0].capitalize()
+    )
+
+    stage_progression, ordered_labels, color_dict = get_stage_progression_and_colors(df_plot)
+    
+    # Get frequency (counts) of each simplified stage
+    stage_counts = df_plot['simplified_stage'].value_counts()
+    
+    total_rows = len(df_plot)
+    if total_rows == 0:
+        st.info("No data to plot stage frequency.")
+        return
+
+    # Calculate proportions
+    proportions = [stage_counts.get(l, 0) / total_rows for l in ordered_labels]
+    
     colors = [color_dict[label] for label in ordered_labels]
     
     fig, ax = plt.subplots(figsize=(5, 4))
@@ -296,17 +298,11 @@ def plot_stage_frequency_per_task(df):
         lambda x: 'Success' if str(x).lower() == 'success' else str(x).split('_')[0].capitalize()
     )
     
-    # Calculate average task progression for each simplified stage (globally) to determine color mapping
-    stage_progression = df_plot.groupby('simplified_stage')['task_progression'].mean().sort_values()
-    ordered_stages = stage_progression.index.tolist()
+    stage_progression, ordered_stages, color_dict = get_stage_progression_and_colors(df_plot)
 
     # Create a crosstab of task vs simplified_stage and normalize by row to get frequencies
     ct = pd.crosstab(df_plot['task'], df_plot['simplified_stage'], normalize='index')
     
-    # Ensure 'Success' is a column if it doesn't exist, to keep coloring consistent
-    if 'Success' not in ct.columns:
-        ct['Success'] = 0.0
-
     # Ensure all ordered stages are present in ct to maintain consistency
     for stage in ordered_stages:
         if stage not in ct.columns:
@@ -315,30 +311,11 @@ def plot_stage_frequency_per_task(df):
     # Reorder the columns of ct according to the globally calculated task progression order
     ct = ct[ordered_stages]
 
-    # Assign colors based on task progression, exactly as in plot_stage_frequency
-    unique_tps = sorted(stage_progression.unique())
-    success_tp = stage_progression.get('Success', 1.0)
-    failure_tps = [tp for tp in unique_tps if tp != success_tp]
-    
-    cmap = plt.get_cmap('Reds')
-    tp_to_color = {}
-    num_failure_tps = len(failure_tps)
-    for i, tp in enumerate(failure_tps):
-        tp_to_color[tp] = cmap((i + 1) / (num_failure_tps + 1))
-        
-    color_dict = {'Success': 'lightgreen'}
-    for stage in ordered_stages:
-        if stage == 'Success':
-            continue
-        tp = stage_progression[stage]
-        color_dict[stage] = tp_to_color.get(tp, 'darkred')
-
     plot_colors = [color_dict[col] for col in ordered_stages]
 
     # Use the color map to create legend elements in the same order
     from matplotlib.patches import Patch
     legend_elements = [Patch(facecolor=color_dict[stage], label=stage) for stage in ordered_stages]
-
 
     fig, ax = plt.subplots(figsize=(8, 6))
     
@@ -359,6 +336,91 @@ def plot_stage_frequency_per_task(df):
     plt.close(fig)
     st.image(buf)
 
+def plot_task_progression_timesteps_per_task(df):
+    # Find the correct column name for timestamps
+    col_name = None
+    for col in ['task_progression_timesteps', 'task_progression_timestamps', 'task_progression_timstamps']:
+        if col in df.columns:
+            col_name = col
+            break
+
+    if col_name is None or 'task' not in df.columns:
+        st.info("No data or required columns ('task', 'task_progression_timestamps') found for this plot.")
+        return
+
+    # Use all rows, not just successful ones
+    df_plot = df.copy()
+    
+    if df_plot.empty:
+        st.info("No data available to plot average timesteps.")
+        return
+
+    try:
+        # Parse timestamps into lists
+        df_plot['parsed_ts'] = df_plot[col_name].apply(
+            lambda x: ast.literal_eval(x) if isinstance(x, str) else x
+        )
+        
+        # Determine the maximum number of stages across all tasks
+        max_stages = df_plot['parsed_ts'].apply(lambda x: len(x) if isinstance(x, list) else 0).max()
+        
+        if max_stages == 0:
+            st.info("No valid timestamp data found.")
+            return
+            
+        # Calculate the duration of each stage. 
+        # ts[0] is time to reach stage 1, ts[1]-ts[0] is time spent in stage 1 to reach stage 2, etc.
+        def get_durations(ts_list):
+            if not isinstance(ts_list, list) or len(ts_list) == 0:
+                return []
+            durations = []
+            prev_ts = 0
+            for ts in ts_list:
+                durations.append(ts - prev_ts)
+                prev_ts = ts
+            return durations
+
+        df_plot['durations'] = df_plot['parsed_ts'].apply(get_durations)
+        
+        # Pad with NaNs so all lists have length max_stages
+        df_plot['durations'] = df_plot['durations'].apply(lambda x: x + [np.nan] * (max_stages - len(x)))
+
+        # Expand durations into separate columns
+        durations_df = pd.DataFrame(df_plot['durations'].tolist(), index=df_plot.index)
+        
+        # Rename columns to 'Stage 1', 'Stage 2', etc.
+        durations_df.columns = [f'Stage {i+1}' for i in range(max_stages)]
+        
+        # Add task column back
+        durations_df['task'] = df_plot['task']
+        
+        # Calculate mean duration per stage per task
+        mean_durations = durations_df.groupby('task').mean()
+        
+        fig, ax = plt.subplots(figsize=(8, 6))
+        
+        # Plot stacked bar chart
+        # We can use a colormap for the stages
+        cmap = plt.get_cmap('viridis')
+        colors = [cmap(i / max_stages) for i in range(max_stages)]
+        
+        mean_durations.plot(kind='bar', stacked=True, ax=ax, color=colors)
+        
+        ax.set_ylabel("Average Timesteps")
+        ax.set_xlabel("")
+        plt.xticks(rotation=45, ha='right')
+        
+        # Move legend outside
+        ax.legend(title='Stage Step', bbox_to_anchor=(1.05, 1), loc='upper left')
+        
+        buf = io.BytesIO()
+        fig.tight_layout()
+        fig.savefig(buf, format="png")
+        plt.close(fig)
+        st.image(buf)
+        
+    except Exception as e:
+        st.error(f"Error plotting average timesteps: {e}")
 
 # ===== SIDEBAR =====
 # Sidebar Filters (Moved to top)
@@ -451,7 +513,10 @@ if st.session_state.selected_experiment and os.path.exists(st.session_state.sele
                         # We split it to only get the actual missing combinations
                         missing_lines = msg.split("Missing evaluations:\n")
                         if len(missing_lines) > 1:
-                            st.write(missing_lines[1])
+                            # Reformat the output to bullet points
+                            missing_items = missing_lines[1].split("\n")
+                            formatted_missing = "\n".join([f"- {item}" for item in missing_items if item.strip()])
+                            st.write(formatted_missing)
                         else:
                              st.write(msg)
 
@@ -476,7 +541,7 @@ if st.session_state.selected_experiment and os.path.exists(st.session_state.sele
     st.divider()
 
     # --- Plots ---
-    st.header("Plots")
+    st.header("Success Metrics")
     try:
         if df is not None and not df.empty:
             c1, c2 = st.columns(2)
@@ -561,15 +626,61 @@ if st.session_state.selected_experiment and os.path.exists(st.session_state.sele
                     st.info("No task_progression column found for plots.")
 
             st.divider()
-            
+
             c5, c6 = st.columns(2)
             with c5:
                 st.subheader("Failure Stage Frequency")
                 plot_stage_frequency(df)
             
             with c6:
-                st.subheader("Failure Stage Frequency per Task")
+                st.subheader("Stage Frequency per Task")
                 plot_stage_frequency_per_task(df)
+                
+            st.divider()
+            
+            c7, c8 = st.columns(2)
+            with c7:
+                st.subheader("Time to Completion per Task")
+                if 'task_progression' in df.columns:
+                    # Look for the correct timestamp column
+                    col_name = None
+                    for col in ['task_progression_timesteps', 'task_progression_timestamps', 'task_progression_timstamps']:
+                        if col in df.columns:
+                            col_name = col
+                            break
+                    if col_name:
+                        # Filter for rows where task_progression is 1
+                        success_df = df[df['task_progression'] == 1].copy()
+                        if not success_df.empty:
+                            try:
+                                # Parse timestamps
+                                success_df['parsed_ts'] = success_df[col_name].apply(lambda x: ast.literal_eval(x) if isinstance(x, str) else x)
+                                # Extract the last timestamp
+                                success_df['completion_time'] = success_df['parsed_ts'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else 0)
+                                
+                                task_time = success_df.groupby('task')['completion_time'].mean().reset_index()
+                                fig, ax = plt.subplots(figsize=(5, 4))
+                                ax.bar(task_time['task'], task_time['completion_time'], color='gold')
+                                ax.set_ylabel("Average Completion Time")
+                                ax.set_xlabel("")
+                                plt.xticks(rotation=45, ha='right')
+                                buf = io.BytesIO()
+                                fig.tight_layout()
+                                fig.savefig(buf, format="png")
+                                plt.close(fig)
+                                st.image(buf)
+                            except Exception as e:
+                                st.error(f"Error parsing timestamps: {e}")
+                        else:
+                            st.info("No successful runs (task_progression == 1) to calculate time to completion.")
+                    else:
+                        st.info("Required column for timestamps not found.")
+                else:
+                    st.info("Required column 'task_progression' not found.")
+            
+            with c8:
+                st.subheader("Stage Timesteps per Task")
+                plot_task_progression_timesteps_per_task(df)
 
         else:
             if raw_df is not None:
