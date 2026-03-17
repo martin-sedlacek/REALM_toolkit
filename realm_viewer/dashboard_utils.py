@@ -4,7 +4,7 @@ import pandas as pd
 import json
 
 SUPPORTED_TASKS = [
-    "put_green_block_in_bowl", #0
+    "put_green_block_into_bowl", #0
     "put_banana_into_box", #1
     "rotate_marker", #2
     "rotate_mug", #3

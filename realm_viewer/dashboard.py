@@ -251,18 +251,9 @@ def plot_stage_frequency(df):
         st.info("No data or required columns ('stage', 'task_progression') found for this plot.")
         return
 
-    # Filter out SB-VRB perturbation for this specific plot
-    if 'perturbation' in df.columns:
-        df_filtered = df[~df['perturbation'].astype(str).str.contains('SB-VRB')].copy()
-    else:
-        df_filtered = df.copy()
+    # Use original dataframe
+    df_plot = df.copy()
 
-    if df_filtered.empty:
-        st.info("No data available after filtering out SB-VRB.")
-        return
-
-    df_plot = df_filtered.copy()
-    
     # Simplify stage labels: 'Success' remains 'Success', others take the first word
     df_plot['simplified_stage'] = df_plot['stage'].apply(
         lambda x: 'Success' if str(x).lower() == 'success' else str(x).split('_')[0].capitalize()
@@ -356,6 +347,7 @@ def plot_stage_frequency_per_task(df):
     fig.savefig(buf, format="png")
     plt.close(fig)
     st.image(buf)
+    st.caption("*Note: Data for perturbation 'SB-VRB' is excluded from this plot.*")
 
 def plot_task_progression_timesteps_per_task(df):
     # Find the correct column name for timestamps
@@ -449,6 +441,7 @@ def plot_task_progression_timesteps_per_task(df):
         fig.savefig(buf, format="png")
         plt.close(fig)
         st.image(buf)
+        st.caption("*Note: Data for perturbation 'SB-VRB' is excluded from this plot.*")
         
     except Exception as e:
         st.error(f"Error plotting average timesteps: {e}")
@@ -550,17 +543,6 @@ if st.session_state.selected_experiment and os.path.exists(st.session_state.sele
                             st.write(formatted_missing)
                         else:
                              st.write(msg)
-
-                # Show completed combinations (from RAW data)
-                completed = dashboard_utils.get_completed_experiments(raw_df, required_repeats)
-                if completed:
-                    with st.expander("Completed Combinations", expanded=False):
-                        grouped = defaultdict(list)
-                        for t, p in completed:
-                            grouped[t].append(p)
-
-                        for t, perts in grouped.items():
-                            st.write(f"- **{t}**: {', '.join(perts)}")
             else:
                 st.warning(err)
         else:
@@ -582,8 +564,18 @@ if st.session_state.selected_experiment and os.path.exists(st.session_state.sele
                 if 'binary_SR' in df.columns:
                     task_sr = df.groupby('task')['binary_SR'].mean().reset_index()
 
+                    # Add mean over all tasks
+                    mean_val = df['binary_SR'].mean()
+                    task_sr = pd.concat([task_sr, pd.DataFrame([{'task': 'All Tasks (Mean)', 'binary_SR': mean_val}])], ignore_index=True)
+
                     fig, ax = plt.subplots(figsize=(5, 4))
-                    ax.bar(task_sr['task'], task_sr['binary_SR'], color='lightgreen')
+                    
+                    colors = ['lightgreen' if task != 'All Tasks (Mean)' else 'darkgreen' for task in task_sr['task']]
+                    ax.bar(task_sr['task'], task_sr['binary_SR'], color=colors)
+                    
+                    # Add dashed horizontal line for mean
+                    ax.axhline(y=mean_val, color='darkgreen', linestyle='--', linewidth=1)
+                    
                     ax.set_ylim(0, 1)
                     ax.set_ylabel("Success Rate")
                     ax.set_xlabel("")
@@ -603,7 +595,7 @@ if st.session_state.selected_experiment and os.path.exists(st.session_state.sele
                     pert_sr = df.groupby('clean_pert')['binary_SR'].mean().reset_index()
 
                     fig, ax = plt.subplots(figsize=(5, 4))
-                    ax.bar(pert_sr['clean_pert'], pert_sr['binary_SR'], color='skyblue')
+                    ax.bar(pert_sr['clean_pert'], pert_sr['binary_SR'], color='lightgreen')
                     ax.set_ylim(0, 1)
                     ax.set_ylabel("Success Rate")
                     ax.set_xlabel("")
@@ -624,8 +616,19 @@ if st.session_state.selected_experiment and os.path.exists(st.session_state.sele
                 st.subheader("Task Progression per Task")
                 if 'task_progression' in df.columns:
                     task_prog = df.groupby('task')['task_progression'].mean().reset_index()
+                    
+                    # Add mean over all tasks
+                    mean_val = df['task_progression'].mean()
+                    task_prog = pd.concat([task_prog, pd.DataFrame([{'task': 'All Tasks (Mean)', 'task_progression': mean_val}])], ignore_index=True)
+
                     fig, ax = plt.subplots(figsize=(5, 4))
-                    ax.bar(task_prog['task'], task_prog['task_progression'], color='lightcoral')
+                    
+                    colors = ['lightblue' if task != 'All Tasks (Mean)' else 'steelblue' for task in task_prog['task']]
+                    ax.bar(task_prog['task'], task_prog['task_progression'], color=colors)
+                    
+                    # Add dashed horizontal line for mean
+                    ax.axhline(y=mean_val, color='steelblue', linestyle='--', linewidth=1)
+                    
                     ax.set_ylim(0, 1)
                     ax.set_ylabel("Task Progression")
                     ax.set_xlabel("")
@@ -643,7 +646,7 @@ if st.session_state.selected_experiment and os.path.exists(st.session_state.sele
                 if 'task_progression' in df.columns:
                     pert_prog = df.groupby('clean_pert')['task_progression'].mean().reset_index()
                     fig, ax = plt.subplots(figsize=(5, 4))
-                    ax.bar(pert_prog['clean_pert'], pert_prog['task_progression'], color='plum')
+                    ax.bar(pert_prog['clean_pert'], pert_prog['task_progression'], color='lightblue')
                     ax.set_ylim(0, 1)
                     ax.set_ylabel("Task Progression")
                     ax.set_xlabel("")
@@ -664,7 +667,7 @@ if st.session_state.selected_experiment and os.path.exists(st.session_state.sele
                 plot_stage_frequency(df)
             
             with c6:
-                st.subheader("Stage Frequency per Task")
+                st.subheader("Failure Stage Frequency per Task")
                 plot_stage_frequency_per_task(df)
                 
             st.divider()
