@@ -13,6 +13,9 @@ from scipy.stats import beta
 
 st.set_page_config(layout="wide", page_title="Experiment Dashboard")
 
+MARKERS = ['o', 's', '^', 'v', '<', '>', 'D', 'P', 'X', '*']
+COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+
 # --- Custom CSS for tree-style sidebar buttons ---
 st.markdown("""
 <style>
@@ -247,7 +250,7 @@ def get_stage_progression_and_colors(df_plot):
         
     return stage_progression, ordered_labels, color_dict
 
-def plot_stage_frequency(df):
+def plot_stage_frequency(df, model_to_marker=None, model_to_color=None):
     if df is None or df.empty or 'stage' not in df.columns or 'task_progression' not in df.columns:
         st.info("No data or required columns ('stage', 'task_progression') found for this plot.")
         return
@@ -261,34 +264,45 @@ def plot_stage_frequency(df):
     )
 
     stage_progression, ordered_labels, color_dict = get_stage_progression_and_colors(df_plot)
-    
-    # Get frequency (counts) of each simplified stage
-    stage_counts = df_plot['simplified_stage'].value_counts()
-    
-    total_rows = len(df_plot)
-    if total_rows == 0:
-        st.info("No data to plot stage frequency.")
-        return
 
-    # Calculate proportions
-    proportions = [stage_counts.get(l, 0) / total_rows for l in ordered_labels]
-    
-    colors = [color_dict[label] for label in ordered_labels]
-    
-    fig, ax = plt.subplots(figsize=(5, 4))
-    ax.bar(ordered_labels, proportions, color=colors, edgecolor='none')
-    ax.set_ylim(0, 1) # Set y-axis range from 0 to 1 as requested
-    ax.set_ylabel("Frequency (Proportion of Total Data)")
-    ax.set_xlabel("")
-    plt.xticks(rotation=45, ha='right')
+    unique_models = sorted(df_plot['model'].unique()) if 'model' in df_plot.columns else ['Unknown']
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+
+    x_offset_width = 0.8 / len(unique_models)
+    x_base = np.arange(len(ordered_labels))    
+    for i, model in enumerate(unique_models):
+        model_df = df_plot[df_plot['model'] == model]
+        stage_counts = model_df['simplified_stage'].value_counts()
+        total_rows = len(model_df)
+        proportions = [stage_counts.get(l, 0) / total_rows if total_rows > 0 else 0 for l in ordered_labels]
+        
+        x_pos = x_base + (i - (len(unique_models)-1)/2) * x_offset_width
+        colors = [color_dict[label] for label in ordered_labels]
+        
+        bars = ax.bar(x_pos, proportions, width=x_offset_width, color=colors, edgecolor='none', alpha=0.8)
+        
+        # Add symbol on top of each group for this model
+        if model_to_marker and model in model_to_marker:
+            marker = model_to_marker[model]
+            m_color = 'black'
+            if model_to_color and model in model_to_color:
+                m_color = model_to_color[model]
+            for j, p in enumerate(proportions):
+                if p > 0:
+                    ax.scatter(x_pos[j], p + 0.02, marker=marker, color='black', edgecolor='black', s=30, zorder=5)
+
+    ax.set_ylim(0, 1.1)
+    ax.set_ylabel("Frequency (Proportion)")
+    ax.set_xticks(x_base)
+    ax.set_xticklabels(ordered_labels, rotation=45, ha='right')
     
     buf = io.BytesIO()
-    fig.tight_layout()
-    fig.savefig(buf, format="png")
+    fig.savefig(buf, format="png", bbox_inches='tight')
     plt.close(fig)
     st.image(buf)
 
-def plot_stage_frequency_per_task(df):
+def plot_stage_frequency_per_task(df, model_to_marker=None, model_to_color=None):
     if df is None or df.empty or 'stage' not in df.columns or 'task' not in df.columns or 'task_progression' not in df.columns:
         st.info("No data or required columns ('stage', 'task', 'task_progression') found for this plot.")
         return
@@ -312,45 +326,72 @@ def plot_stage_frequency_per_task(df):
     
     stage_progression, ordered_stages, color_dict = get_stage_progression_and_colors(df_plot)
 
-    # Create a crosstab of task vs simplified_stage and normalize by row to get frequencies
-    ct = pd.crosstab(df_plot['task'], df_plot['simplified_stage'], normalize='index')
+    unique_models = sorted(df_plot['model'].unique()) if 'model' in df_plot.columns else ['Unknown']
+    unique_tasks = sorted(df_plot['task'].unique())
+
+    fig, ax = plt.subplots(figsize=(6, 4))
     
-    # Ensure all ordered stages are present in ct to maintain consistency
-    for stage in ordered_stages:
-        if stage not in ct.columns:
-            ct[stage] = 0.0
-            
-    # Reorder the columns of ct according to the globally calculated task progression order
-    ct = ct[ordered_stages]
-
-    plot_colors = [color_dict[col] for col in ordered_stages]
-
-    # Use the color map to create legend elements in the same order
+    x_offset_width = 0.8 / len(unique_models)
+    x_base = np.arange(len(unique_tasks))
+    
+    # Track handles for stage legend
     from matplotlib.patches import Patch
-    legend_elements = [Patch(facecolor=color_dict[stage], label=stage) for stage in ordered_stages]
+    stage_legend_elements = [Patch(facecolor=color_dict[stage], label=stage) for stage in ordered_stages]
 
-    fig, ax = plt.subplots(figsize=(8, 6))
-    
-    # Plot stacked bar chart using the ordered columns and mapped colors
-    # Added linewidth=0 to prevent drawing visible edges for 0-height segments
-    ct.plot(kind='bar', stacked=True, ax=ax, color=plot_colors, linewidth=0)
-    
-    ax.set_ylim(0, 1)
+    for i, model in enumerate(unique_models):
+        model_df = df_plot[df_plot['model'] == model]
+        # Create a crosstab for this model: task vs simplified_stage
+        if model_df.empty:
+            continue
+            
+        ct = pd.crosstab(model_df['task'], model_df['simplified_stage'], normalize='index')
+        
+        # Ensure all tasks and stages are represented
+        for task in unique_tasks:
+            if task not in ct.index:
+                ct.loc[task] = 0.0
+        for stage in ordered_stages:
+            if stage not in ct.columns:
+                ct[stage] = 0.0
+        
+        ct = ct.reindex(index=unique_tasks, columns=ordered_stages).fillna(0)
+        
+        x_pos = x_base + (i - (len(unique_models)-1)/2) * x_offset_width
+        bottom = np.zeros(len(unique_tasks))
+        
+        for stage in ordered_stages:
+            proportions = ct[stage].values
+            ax.bar(x_pos, proportions, width=x_offset_width, bottom=bottom, 
+                   color=color_dict[stage], edgecolor='none', alpha=0.8)
+            bottom += proportions
+        
+        # Add symbol on top of the stack for this model
+        if model_to_marker and model in model_to_marker:
+            marker = model_to_marker[model]
+            m_color = 'black'
+            if model_to_color and model in model_to_color:
+                m_color = model_to_color[model]
+            for j in range(len(unique_tasks)):
+                if bottom[j] > 0:
+                    ax.scatter(x_pos[j], bottom[j] + 0.02, marker=marker, color='black', edgecolor='black', s=30, zorder=5)
+
+    ax.set_ylim(0, 1.15)
     ax.set_ylabel("Frequency")
-    ax.set_xlabel("")
-    plt.xticks(rotation=45, ha='right')
+    ax.set_xticks(x_base)
+    ax.set_xticklabels(unique_tasks, rotation=45, ha='right')
     
-    # Move legend outside, using custom legend elements to enforce matching color/label
-    ax.legend(handles=legend_elements, title='Stage', bbox_to_anchor=(1.05, 1), loc='upper left')
+    # Stage Legend at the bottom
+    ax.legend(handles=stage_legend_elements, title='Stage', loc='upper center', 
+              bbox_to_anchor=(0.5, -1.0), ncol=min(len(ordered_stages), 5))
     
     buf = io.BytesIO()
-    fig.tight_layout()
-    fig.savefig(buf, format="png")
+    # Manual adjustment to prevent shrinking while making room for labels and legend
+    fig.subplots_adjust(bottom=0.35)
+    fig.savefig(buf, format="png", bbox_inches='tight')
     plt.close(fig)
     st.image(buf)
-    st.caption("*Note: Data for perturbation 'SB-VRB' is excluded from this plot.*")
 
-def plot_task_progression_timesteps_per_task(df):
+def plot_task_progression_timesteps_per_task(df, model_to_marker=None, model_to_color=None):
     # Find the correct column name for timestamps
     col_name = None
     for col in ['task_progression_timesteps', 'task_progression_timestamps', 'task_progression_timstamps']:
@@ -374,9 +415,8 @@ def plot_task_progression_timesteps_per_task(df):
 
     df_plot = df_filtered.copy()
     
-    if df_plot.empty:
-        st.info("No data available to plot average timesteps.")
-        return
+    unique_models = sorted(df_plot['model'].unique()) if 'model' in df_plot.columns else ['Unknown']
+    unique_tasks = sorted(df_plot['task'].unique())
 
     try:
         # Parse timestamps into lists
@@ -384,15 +424,12 @@ def plot_task_progression_timesteps_per_task(df):
             lambda x: ast.literal_eval(x) if isinstance(x, str) else x
         )
         
-        # Determine the maximum number of stages across all tasks
+        # Determine max stages
         max_stages = df_plot['parsed_ts'].apply(lambda x: len(x) if isinstance(x, list) else 0).max()
-        
         if max_stages == 0:
             st.info("No valid timestamp data found.")
             return
-            
-        # Calculate the duration of each stage. 
-        # ts[0] is time to reach stage 1, ts[1]-ts[0] is time spent in stage 1 to reach stage 2, etc.
+
         def get_durations(ts_list):
             if not isinstance(ts_list, list) or len(ts_list) == 0:
                 return []
@@ -403,55 +440,71 @@ def plot_task_progression_timesteps_per_task(df):
                 prev_ts = ts
             return durations
 
-        df_plot['durations'] = df_plot['parsed_ts'].apply(get_durations)
+        fig, ax = plt.subplots(figsize=(6, 4))
+        x_offset_width = 0.8 / len(unique_models)
+        x_base = np.arange(len(unique_tasks))
         
-        # Pad with NaNs so all lists have length max_stages
-        df_plot['durations'] = df_plot['durations'].apply(lambda x: x + [np.nan] * (max_stages - len(x)))
-
-        # Expand durations into separate columns
-        durations_df = pd.DataFrame(df_plot['durations'].tolist(), index=df_plot.index)
-        
-        # Rename columns to 'Stage 1', 'Stage 2', etc.
-        durations_df.columns = [f'Stage {i+1}' for i in range(max_stages)]
-        
-        # Add task column back
-        durations_df['task'] = df_plot['task']
-        
-        # Calculate mean duration per stage per task
-        mean_durations = durations_df.groupby('task').mean()
-        
-        fig, ax = plt.subplots(figsize=(8, 6))
-        
-        # Plot stacked bar chart
-        # We can use a colormap for the stages
         cmap = plt.get_cmap('viridis')
-        colors = [cmap(i / max_stages) for i in range(max_stages)]
-        
-        # Added linewidth=0 to prevent drawing visible edges for 0-height segments
-        mean_durations.plot(kind='bar', stacked=True, ax=ax, color=colors, linewidth=0)
-        
+        stage_colors = [cmap(i / max_stages) for i in range(max_stages)]
+
+        for i, model in enumerate(unique_models):
+            model_df = df_plot[df_plot['model'] == model].copy()
+            if model_df.empty:
+                continue
+            
+            model_df['durations'] = model_df['parsed_ts'].apply(get_durations)
+            # Pad durations
+            model_df['durations'] = model_df['durations'].apply(lambda x: x + [np.nan] * (max_stages - len(x)))
+            durations_df = pd.DataFrame(model_df['durations'].tolist(), index=model_df.index)
+            durations_df['task'] = model_df['task']
+            
+            mean_durations = durations_df.groupby('task').mean().reindex(unique_tasks).fillna(0)
+            
+            x_pos = x_base + (i - (len(unique_models)-1)/2) * x_offset_width
+            bottom = np.zeros(len(unique_tasks))
+            
+            for stage_idx in range(max_stages):
+                vals = mean_durations[stage_idx].values
+                ax.bar(x_pos, vals, width=x_offset_width, bottom=bottom, 
+                       color=stage_colors[stage_idx], edgecolor='none', alpha=0.8)
+                bottom += vals
+                
+            # Add symbol on top
+            if model_to_marker and model in model_to_marker:
+                marker = model_to_marker[model]
+                m_color = 'black'
+                if model_to_color and model in model_to_color:
+                    m_color = model_to_color[model]
+                for j in range(len(unique_tasks)):
+                    if bottom[j] > 0:
+                        ax.scatter(x_pos[j], bottom[j] + 5, marker=marker, color='black', edgecolor='black', s=30, zorder=5)
+
         ax.set_ylabel("Average Timesteps")
-        ax.set_xlabel("")
-        plt.xticks(rotation=45, ha='right')
+        ax.set_xticks(x_base)
+        ax.set_xticklabels(unique_tasks, rotation=45, ha='right')
         
-        # Move legend outside
-        ax.legend(title='Stage Step', bbox_to_anchor=(1.05, 1), loc='upper left')
+        # Stage Legend at the bottom
+        from matplotlib.patches import Patch
+        stage_legend_elements = [Patch(facecolor=stage_colors[i], label=f'Stage {i+1}') for i in range(max_stages)]
+        ax.legend(handles=stage_legend_elements, title='Stage Step', loc='upper center',
+                  bbox_to_anchor=(0.5, -1.0), ncol=min(max_stages, 5))
         
         buf = io.BytesIO()
-        fig.tight_layout()
-        fig.savefig(buf, format="png")
+        # Manual adjustment to prevent shrinking while making room for labels and legend
+        fig.subplots_adjust(bottom=0.35)
+        fig.savefig(buf, format="png", bbox_inches='tight')
         plt.close(fig)
         st.image(buf)
-        st.caption("*Note: Data for perturbation 'SB-VRB' is excluded from this plot.*")
         
     except Exception as e:
         st.error(f"Error plotting average timesteps: {e}")
 
-def plot_bayesian_violin(ax, labels, successes, failures, colors, title=None, fontsize=20):
+def plot_bayesian_violin(ax, labels, successes, failures, colors, symbols=None, model_names=None, model_colors=None, title=None, fontsize=20):
     x_positions = np.arange(len(labels))
     successes_arr = np.array(successes, dtype=float).flatten()
     failures_arr = np.array(failures, dtype=float).flatten()
     colors_arr = np.array(colors).flatten()
+    symbols_arr = np.array(symbols).flatten() if symbols is not None else None
 
     # Handle multiple models grouped under the same task label
     # Labels expected to be "TaskName" or "TaskName - ModelName"
@@ -494,6 +547,14 @@ def plot_bayesian_violin(ax, labels, successes, failures, colors, title=None, fo
         posterior_mean = alpha / (alpha + beta_param)
         ax.hlines(y=posterior_mean, xmin=x_positions[data_idx] - 0.105, xmax=x_positions[data_idx] + 0.105, color='black', linewidth=2)
 
+        # Plot symbol on top
+        if symbols_arr is not None and data_idx < len(symbols_arr):
+            marker = symbols_arr[data_idx]
+            if marker:
+                # Put symbol slightly above the violin
+                y_pos = y_clipped.max() + 0.05 if len(y_clipped) > 0 else 1.05
+                ax.scatter(x_positions[data_idx], y_pos, marker=marker, color='black', edgecolor='black', s=50, zorder=5)
+
     # Label groups and draw dividers
     for i, task_label in enumerate(unique_tasks):
         start_idx = unique_indices[i]
@@ -505,14 +566,14 @@ def plot_bayesian_violin(ax, labels, successes, failures, colors, title=None, fo
 
         center_x = start_idx + (group_size - 1) / 2
         
-        # Determine rotation based on label length and number of tasks
-        rot = 45 if (len(task_label) > 10 or len(labels) > 5) else 0
-        ha = 'right' if rot != 0 else 'center'
+        # Consistent 45-degree rotation for all labels
+        rot = 45
+        ha = 'right'
         
         ax.text(center_x, -0.05, task_label, ha=ha, va="top", fontsize=fontsize-2, rotation=rot)
 
     ax.set_xlim(-0.5, len(labels) - 0.5)
-    ax.set_ylim(0, 1)
+    ax.set_ylim(0, 1.15) # Increased to make room for symbols
     ax.set_ylabel("Success Rate", fontsize=fontsize, labelpad=15)
     ax.set_xticks([])
     if title:
@@ -520,7 +581,131 @@ def plot_bayesian_violin(ax, labels, successes, failures, colors, title=None, fo
     else:
         ax.set_title("Binary Success Rate (Bayesian Posterior)", fontsize=fontsize+2, y=1.05, fontstyle='italic')
 
+    # Manual adjustment to prevent shrinking while making room for rotated labels
+    fig.subplots_adjust(bottom=0.35)
     return ax
+
+def plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols=None, model_names=None, model_colors=None, title=None, ylabel=None, fontsize=12):
+    x_positions = np.arange(len(labels))
+    
+    # Extract group names for labeling and dividers
+    group_names = [l.split(' - ')[0] for l in labels]
+    unique_groups = []
+    unique_indices = []
+    for i, g in enumerate(group_names):
+        if g not in unique_groups:
+            unique_groups.append(g)
+            unique_indices.append(i)
+            
+    # Plot bars
+    ax.bar(x_positions, values, color=colors, edgecolor='none')
+    
+    # Plot symbols on top
+    if symbols:
+        for i, (v, s) in enumerate(zip(values, symbols)):
+            if s:
+                ax.scatter(x_positions[i], v + 0.05, marker=s, color='black', edgecolor='black', s=50, zorder=5)
+                
+    # Dividers and labels
+    for i, group_label in enumerate(unique_groups):
+        start_idx = unique_indices[i]
+        end_idx = unique_indices[i+1] if i + 1 < len(unique_indices) else len(labels)
+        group_size = end_idx - start_idx
+        
+        if i > 0:
+            ax.axvline(x_positions[start_idx] - 0.5, color="gray", linewidth=0.8, linestyle='--')
+            
+        center_x = start_idx + (group_size - 1) / 2
+        # Consistent 45-degree rotation for all labels
+        rot = 45
+        ha = 'right'
+        ax.text(center_x, -0.05, group_label, ha=ha, va="top", fontsize=fontsize-2, rotation=rot)
+        
+    ax.set_xlim(-0.5, len(labels) - 0.5)
+    # Automatically adjust ylim to fit symbols
+    max_val = max(values) if values else 1.0
+    ax.set_ylim(0, max(1.1, max_val + 0.15))
+    if ylabel:
+        ax.set_ylabel(ylabel, fontsize=fontsize)
+    ax.set_xticks([])
+    if title:
+        ax.set_title(title, fontsize=fontsize+2)
+        
+    # Manual adjustment to prevent shrinking while making room for rotated labels
+    fig.subplots_adjust(bottom=0.35)
+    return ax
+
+def render_model_legend(model_to_marker, model_to_color):
+    """Render a standalone legend infographic for models."""
+    if not model_to_marker:
+        return
+    
+    unique_models = sorted(model_to_marker.keys())
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+    
+    # Create a wide, short figure
+    fig, ax = plt.subplots(figsize=(10, 0.8))
+    ax.axis('off')
+    
+    # Use two handles for each model: a patch for the bar/violin color and a Line2D for the marker shape
+    legend_elements = []
+    for m in unique_models:
+        color = model_to_color[m]
+        marker = model_to_marker[m]
+        # Combination of color patch and marker shape
+        legend_elements.append((Patch(facecolor=color, edgecolor='black', alpha=0.8),
+                               Line2D([0], [0], marker=marker, color='w', markerfacecolor='black', 
+                                      markeredgecolor='black', markersize=10)))
+    
+    # Handler for the tuple of handles
+    from matplotlib.legend_handler import HandlerTuple
+    ax.legend(handles=legend_elements, labels=unique_models, loc='center', ncol=min(len(unique_models), 5), 
+              title="Models", frameon=False, fontsize=10, handler_map={tuple: HandlerTuple(ndivide=None)})
+    
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches='tight', transparent=True)
+    plt.close(fig)
+    st.image(buf)
+
+def render_metric_bar_chart(df, metric_col, title, ylabel, model_to_marker, model_to_color, color=None):
+    """Helper to render a grouped bar chart for a specific metric."""
+    if metric_col not in df.columns:
+        st.info(f"Column '{metric_col}' not found in data.")
+        return
+
+    try:
+        # Filter for rows where the metric is not NaN
+        metric_df = df[df[metric_col].notna()].copy()
+        if metric_df.empty:
+            st.info(f"No data available for metric '{metric_col}'.")
+            return
+
+        # Group by task and model
+        stats = metric_df.groupby(['task', 'model'])[metric_col].mean().reset_index()
+        stats = stats.sort_values(['task', 'model'])
+        
+        labels = [f"{row['task']} - {row['model']}" for _, row in stats.iterrows()]
+        values = stats[metric_col].tolist()
+        
+        # Use model specific colors if provided, else fallback to passed color or default gold
+        if model_to_color:
+            colors = [model_to_color[row['model']] for _, row in stats.iterrows()]
+        else:
+            colors = [color if color else 'gold'] * len(labels)
+            
+        symbols = [model_to_marker[row['model']] for _, row in stats.iterrows()]
+        model_names = stats['model'].tolist()
+        
+        fig, ax = plt.subplots(figsize=(6, 4))
+        plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel=ylabel, title=title)
+        
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches='tight')
+        plt.close(fig)
+        st.image(buf)
+    except Exception as e:
+        st.error(f"Error plotting {title}: {e}")
 
 # ===== SIDEBAR =====
 # Sidebar Filters (Moved to top)
@@ -596,6 +781,11 @@ if selected_runs:
     for run_path in selected_runs:
         report = get_cached_reports(run_path)
         if report is not None:
+            # Add model info
+            rel_path = os.path.relpath(run_path, LOGS_DIR)
+            path_parts = rel_path.split(os.sep)
+            model_name = path_parts[1] if len(path_parts) > 1 else "Unknown"
+            report['model'] = model_name
             all_reports.append(report)
         all_videos.extend(get_cached_videos(run_path))
     
@@ -649,6 +839,13 @@ if selected_runs:
 
     st.divider()
 
+    # --- Model Legend (Global) ---
+    if df is not None and not df.empty:
+        unique_models = sorted(df['model'].unique())
+        model_to_marker = {model: MARKERS[i % len(MARKERS)] for i, model in enumerate(unique_models)}
+        model_to_color = {model: COLORS[i % len(COLORS)] for i, model in enumerate(unique_models)}
+        render_model_legend(model_to_marker, model_to_color)
+
     # --- Plots ---
     st.header("Success Metrics")
     try:
@@ -658,26 +855,33 @@ if selected_runs:
             with c1:
                 st.subheader("Success Rate per Task")
                 if 'binary_SR' in df.columns:
-                    task_stats = df.groupby('task')['binary_SR'].agg(['sum', 'count']).reset_index()
-                    labels = task_stats['task'].tolist()
+                    # Group by both task and model
+                    task_stats = df.groupby(['task', 'model'])['binary_SR'].agg(['sum', 'count']).reset_index()
+                    task_stats = task_stats.sort_values(['task', 'model'])
+                    
+                    labels = [f"{row['task']} - {row['model']}" for _, row in task_stats.iterrows()]
                     successes = task_stats['sum'].tolist()
                     failures = (task_stats['count'] - task_stats['sum']).tolist()
-                    colors = ['lightgreen'] * len(labels)
+                    colors = [model_to_color[row['model']] for _, row in task_stats.iterrows()]
+                    symbols = [model_to_marker[row['model']] for _, row in task_stats.iterrows()]
+                    model_names = task_stats['model'].tolist()
 
-                    # Add mean over all tasks
-                    all_successes = df['binary_SR'].sum()
-                    all_count = df['binary_SR'].count()
-                    labels.append("All Tasks (Mean)")
-                    successes.append(all_successes)
-                    failures.append(all_count - all_successes)
-                    colors.append('darkgreen')
+                    # Add mean over all tasks per model
+                    all_tasks_stats = df.groupby('model')['binary_SR'].agg(['sum', 'count']).reset_index()
+                    all_tasks_stats = all_tasks_stats.sort_values('model')
+                    for _, row in all_tasks_stats.iterrows():
+                        labels.append(f"All Tasks (Mean) - {row['model']}")
+                        successes.append(row['sum'])
+                        failures.append(row['count'] - row['sum'])
+                        colors.append(model_to_color[row['model']])
+                        symbols.append(model_to_marker[row['model']])
+                        model_names.append(row['model'])
 
-                    fig, ax = plt.subplots(figsize=(6, 5))
-                    plot_bayesian_violin(ax, labels, successes, failures, colors, fontsize=12)
+                    fig, ax = plt.subplots(figsize=(6, 4))
+                    plot_bayesian_violin(ax, labels, successes, failures, colors, symbols=symbols, model_names=model_names, model_colors=model_to_color, fontsize=12)
 
                     buf = io.BytesIO()
-                    fig.tight_layout()
-                    fig.savefig(buf, format="png")
+                    fig.savefig(buf, format="png", bbox_inches='tight')
                     plt.close(fig)
                     st.image(buf)
 
@@ -686,18 +890,21 @@ if selected_runs:
                 df['clean_pert'] = df['perturbation'].apply(lambda x: x.replace("['", "").replace("']", "") if isinstance(x, str) else str(x))
 
                 if 'binary_SR' in df.columns:
-                    pert_stats = df.groupby('clean_pert')['binary_SR'].agg(['sum', 'count']).reset_index()
-                    labels = pert_stats['clean_pert'].tolist()
+                    pert_stats = df.groupby(['clean_pert', 'model'])['binary_SR'].agg(['sum', 'count']).reset_index()
+                    pert_stats = pert_stats.sort_values(['clean_pert', 'model'])
+                    
+                    labels = [f"{row['clean_pert']} - {row['model']}" for _, row in pert_stats.iterrows()]
                     successes = pert_stats['sum'].tolist()
                     failures = (pert_stats['count'] - pert_stats['sum']).tolist()
-                    colors = ['lightgreen'] * len(labels)
+                    colors = [model_to_color[row['model']] for _, row in pert_stats.iterrows()]
+                    symbols = [model_to_marker[row['model']] for _, row in pert_stats.iterrows()]
+                    model_names = pert_stats['model'].tolist()
 
-                    fig, ax = plt.subplots(figsize=(6, 5))
-                    plot_bayesian_violin(ax, labels, successes, failures, colors, fontsize=12)
+                    fig, ax = plt.subplots(figsize=(6, 4))
+                    plot_bayesian_violin(ax, labels, successes, failures, colors, symbols=symbols, model_names=model_names, model_colors=model_to_color, fontsize=12)
 
                     buf = io.BytesIO()
-                    fig.tight_layout()
-                    fig.savefig(buf, format="png")
+                    fig.savefig(buf, format="png", bbox_inches='tight')
                     plt.close(fig)
                     st.image(buf)
                 else:
@@ -709,27 +916,30 @@ if selected_runs:
             with c3:
                 st.subheader("Task Progression per Task")
                 if 'task_progression' in df.columns:
-                    task_prog = df.groupby('task')['task_progression'].mean().reset_index()
+                    task_prog = df.groupby(['task', 'model'])['task_progression'].mean().reset_index()
+                    task_prog = task_prog.sort_values(['task', 'model'])
                     
-                    # Add mean over all tasks
-                    mean_val = df['task_progression'].mean()
-                    task_prog = pd.concat([task_prog, pd.DataFrame([{'task': 'All Tasks (Mean)', 'task_progression': mean_val}])], ignore_index=True)
+                    labels = [f"{row['task']} - {row['model']}" for _, row in task_prog.iterrows()]
+                    values = task_prog['task_progression'].tolist()
+                    colors = [model_to_color[row['model']] for _, row in task_prog.iterrows()]
+                    symbols = [model_to_marker[row['model']] for _, row in task_prog.iterrows()]
+                    model_names = task_prog['model'].tolist()
 
-                    fig, ax = plt.subplots(figsize=(5, 4))
-                    
-                    colors = ['lightblue' if task != 'All Tasks (Mean)' else 'steelblue' for task in task_prog['task']]
-                    ax.bar(task_prog['task'], task_prog['task_progression'], color=colors)
-                    
-                    # Add dashed horizontal line for mean
-                    ax.axhline(y=mean_val, color='steelblue', linestyle='--', linewidth=1)
-                    
-                    ax.set_ylim(0, 1)
-                    ax.set_ylabel("Task Progression")
-                    ax.set_xlabel("")
-                    plt.xticks(rotation=45, ha='right')
+                    # Add mean over all tasks per model
+                    all_tasks_prog = df.groupby('model')['task_progression'].mean().reset_index()
+                    all_tasks_prog = all_tasks_prog.sort_values('model')
+                    for _, row in all_tasks_prog.iterrows():
+                        labels.append(f"All Tasks (Mean) - {row['model']}")
+                        values.append(row['task_progression'])
+                        colors.append(model_to_color[row['model']])
+                        symbols.append(model_to_marker[row['model']])
+                        model_names.append(row['model'])
+
+                    fig, ax = plt.subplots(figsize=(6, 4))
+                    plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel="Task Progression")
+
                     buf = io.BytesIO()
-                    fig.tight_layout()
-                    fig.savefig(buf, format="png")
+                    fig.savefig(buf, format="png", bbox_inches='tight')
                     plt.close(fig)
                     st.image(buf)
                 else:
@@ -738,16 +948,20 @@ if selected_runs:
             with c4:
                 st.subheader("Task Progression per Perturbation")
                 if 'task_progression' in df.columns:
-                    pert_prog = df.groupby('clean_pert')['task_progression'].mean().reset_index()
-                    fig, ax = plt.subplots(figsize=(5, 4))
-                    ax.bar(pert_prog['clean_pert'], pert_prog['task_progression'], color='lightblue')
-                    ax.set_ylim(0, 1)
-                    ax.set_ylabel("Task Progression")
-                    ax.set_xlabel("")
-                    plt.xticks(rotation=45, ha='right')
+                    pert_prog = df.groupby(['clean_pert', 'model'])['task_progression'].mean().reset_index()
+                    pert_prog = pert_prog.sort_values(['clean_pert', 'model'])
+                    
+                    labels = [f"{row['clean_pert']} - {row['model']}" for _, row in pert_prog.iterrows()]
+                    values = pert_prog['task_progression'].tolist()
+                    colors = [model_to_color[row['model']] for _, row in pert_prog.iterrows()]
+                    symbols = [model_to_marker[row['model']] for _, row in pert_prog.iterrows()]
+                    model_names = pert_prog['model'].tolist()
+
+                    fig, ax = plt.subplots(figsize=(6, 4))
+                    plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel="Task Progression")
+
                     buf = io.BytesIO()
-                    fig.tight_layout()
-                    fig.savefig(buf, format="png")
+                    fig.savefig(buf, format="png", bbox_inches='tight')
                     plt.close(fig)
                     st.image(buf)
                 else:
@@ -758,13 +972,18 @@ if selected_runs:
             c5, c6 = st.columns(2)
             with c5:
                 st.subheader("Failure Stage Frequency")
-                plot_stage_frequency(df)
+                plot_stage_frequency(df, model_to_marker=model_to_marker, model_to_color=model_to_color)
             
             with c6:
                 st.subheader("Failure Stage Frequency per Task")
-                plot_stage_frequency_per_task(df)
+                plot_stage_frequency_per_task(df, model_to_marker=model_to_marker, model_to_color=model_to_color)
+            
+            st.caption("*Note: Data for perturbation 'SB-VRB' is excluded from the 'Failure Stage Frequency per Task' plot.*")
                 
             st.divider()
+
+            # --- Auxiliary Metrics ---
+            st.header("Auxiliary metrics")
             
             c7, c8 = st.columns(2)
             with c7:
@@ -786,15 +1005,20 @@ if selected_runs:
                                 # Extract the last timestamp
                                 success_df['completion_time'] = success_df['parsed_ts'].apply(lambda x: x[-1] if isinstance(x, list) and len(x) > 0 else 0)
                                 
-                                task_time = success_df.groupby('task')['completion_time'].mean().reset_index()
-                                fig, ax = plt.subplots(figsize=(5, 4))
-                                ax.bar(task_time['task'], task_time['completion_time'], color='gold')
-                                ax.set_ylabel("Average Completion Time")
-                                ax.set_xlabel("")
-                                plt.xticks(rotation=45, ha='right')
+                                task_time = success_df.groupby(['task', 'model'])['completion_time'].mean().reset_index()
+                                task_time = task_time.sort_values(['task', 'model'])
+                                
+                                labels = [f"{row['task']} - {row['model']}" for _, row in task_time.iterrows()]
+                                values = task_time['completion_time'].tolist()
+                                colors = [model_to_color[row['model']] for _, row in task_time.iterrows()]
+                                symbols = [model_to_marker[row['model']] for _, row in task_time.iterrows()]
+                                model_names = task_time['model'].tolist()
+                                
+                                fig, ax = plt.subplots(figsize=(6, 4))
+                                plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel="Average Completion Time")
+                                
                                 buf = io.BytesIO()
-                                fig.tight_layout()
-                                fig.savefig(buf, format="png")
+                                fig.savefig(buf, format="png", bbox_inches='tight')
                                 plt.close(fig)
                                 st.image(buf)
                             except Exception as e:
@@ -808,10 +1032,46 @@ if selected_runs:
             
             with c8:
                 st.subheader("Stage Timesteps per Task")
-                plot_task_progression_timesteps_per_task(df)
+                plot_task_progression_timesteps_per_task(df, model_to_marker=model_to_marker, model_to_color=model_to_color)
+            
+            st.caption("*Note: Data for perturbation 'SB-VRB' is excluded from the 'Stage Timesteps per Task' plot.*")
+            
+            st.divider()
+
+            # --- Physical and Kinematic Metrics ---
+            c9, c10 = st.columns(2)
+            with c9:
+                render_metric_bar_chart(df, 'joint_vel_var', "Joint Velocity Variance", "Mean Variance", model_to_marker, model_to_color, color='lightblue')
+            with c10:
+                render_metric_bar_chart(df, 'joint_acc_var', "Joint Acceleration Variance", "Mean Variance", model_to_marker, model_to_color, color='lightblue')
+
+            st.divider()
+
+            c11, c12 = st.columns(2)
+            with c11:
+                render_metric_bar_chart(df, 'joint_jerk', "Joint Jerk", "Mean Jerk", model_to_marker, model_to_color, color='lightblue')
+            with c12:
+                render_metric_bar_chart(df, 'cart_jerk', "Cartesian Jerk", "Mean Jerk", model_to_marker, model_to_color, color='lightblue')
+
+            st.divider()
+
+            c13, c14 = st.columns(2)
+            with c13:
+                render_metric_bar_chart(df, 'joint_path_length', "Joint Path Length", "Mean Path Length", model_to_marker, model_to_color, color='lightgreen')
+            with c14:
+                render_metric_bar_chart(df, 'cart_path_length', "Cartesian Path Length", "Mean Path Length", model_to_marker, model_to_color, color='lightgreen')
+
+            st.divider()
+
+            # --- Interaction and Collision Metrics ---
+            c15, c16 = st.columns(2)
+            with c15:
+                render_metric_bar_chart(df, 'collisions_env', "Environment Collisions", "Count", model_to_marker, model_to_color, color='salmon')
+            with c16:
+                render_metric_bar_chart(df, 'object_drops', "Object Drops", "Count", model_to_marker, model_to_color, color='salmon')
 
         else:
-            if raw_df is not None:
+            if df is not None:
                 st.info("No data matches the selected filters.")
             else:
                 st.info("No data available.")
