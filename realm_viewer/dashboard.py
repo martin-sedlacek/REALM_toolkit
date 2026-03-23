@@ -3,6 +3,7 @@ import os
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 import numpy as np
 import io
 import dashboard_utils
@@ -92,6 +93,30 @@ def _toggle_folder(path):
     else:
         st.session_state.expanded_folders.add(path)
 
+def _update_selection_recursive(path, val):
+    """Recursively update the selection state of all experiments under a folder."""
+    # If this path is an experiment folder, update its selection state
+    if get_cached_is_experiment_folder(path):
+        st.session_state[f"chk_{path}"] = val
+    
+    # Also update the fold_ key (used for folder-level "Select All" checkboxes)
+    st.session_state[f"fold_{path}"] = val
+    
+    # Always recurse into subdirectories to find nested experiments/folders
+    subdirs = get_cached_subdirectories(path)
+    for d in subdirs:
+        _update_selection_recursive(os.path.join(path, d), val)
+
+def _on_folder_checkbox_change(path):
+    """Callback when a folder checkbox is toggled."""
+    val = st.session_state.get(f"fold_{path}", False)
+    _update_selection_recursive(path, val)
+
+def _on_experiment_checkbox_change(path):
+    """Callback when an individual experiment checkbox is toggled."""
+    val = st.session_state.get(f"chk_{path}", False)
+    _update_selection_recursive(path, val)
+
 def has_experiments_recursively(base_path, search_query="", match_found_in_path=False):
     """Check if the given path or any of its subdirectories contain an experiment matching the search query."""
     # If a match was already found in the parent path, we just need to know if this branch contains ANY experiment.
@@ -149,15 +174,23 @@ def render_tree(base_path, depth=0, search_query="", match_found_in_path=False):
         if has_children:
             chevron = "▾" if is_expanded else "▸"
             label = f"{indent}{chevron} 📁 {d}"
-            st.sidebar.button(
-                label,
-                key=f"tree_{full_path}",
-                on_click=_toggle_folder,
-                args=(full_path,),
-            )
+            
+            # Use columns to put the checkbox and expansion button on the same line
+            # We want them tightly packed, so we use a very small ratio for the checkbox
+            # sidebar is ~300px, so 0.15 is about 45px.
+            cols = st.sidebar.columns([0.15, 0.85])
+            with cols[0]:
+                st.checkbox("Select All", key=f"fold_{full_path}", on_change=_on_folder_checkbox_change, args=(full_path,), label_visibility="collapsed")
+            with cols[1]:
+                st.button(
+                    label,
+                    key=f"tree_{full_path}",
+                    on_click=_toggle_folder,
+                    args=(full_path,),
+                )
         elif is_exp:
             label = f"{indent}🔬 {d}"
-            st.sidebar.checkbox(label, key=f"chk_{full_path}")
+            st.sidebar.checkbox(label, key=f"chk_{full_path}", on_change=_on_experiment_checkbox_change, args=(full_path,))
         else:
             # Non-experiment leaf folder (should not be reached if has_experiments_recursively is working correctly)
             st.sidebar.markdown(
@@ -250,9 +283,8 @@ def get_stage_progression_and_colors(df_plot):
         
     return stage_progression, ordered_labels, color_dict
 
-def plot_stage_frequency(df, model_to_marker=None, model_to_color=None):
+def plot_stage_frequency(df, ax, model_to_marker=None, model_to_color=None, title=None):
     if df is None or df.empty or 'stage' not in df.columns or 'task_progression' not in df.columns:
-        st.info("No data or required columns ('stage', 'task_progression') found for this plot.")
         return
 
     # Use original dataframe
@@ -266,8 +298,6 @@ def plot_stage_frequency(df, model_to_marker=None, model_to_color=None):
     stage_progression, ordered_labels, color_dict = get_stage_progression_and_colors(df_plot)
 
     unique_models = sorted(df_plot['model'].unique()) if 'model' in df_plot.columns else ['Unknown']
-
-    fig, ax = plt.subplots(figsize=(6, 4))
 
     x_offset_width = 0.8 / len(unique_models)
     x_base = np.arange(len(ordered_labels))    
@@ -296,15 +326,11 @@ def plot_stage_frequency(df, model_to_marker=None, model_to_color=None):
     ax.set_ylabel("Frequency (Proportion)")
     ax.set_xticks(x_base)
     ax.set_xticklabels(ordered_labels, rotation=45, ha='right')
-    
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches='tight')
-    plt.close(fig)
-    st.image(buf)
+    if title:
+        ax.set_title(title)
 
-def plot_stage_frequency_per_task(df, model_to_marker=None, model_to_color=None):
+def plot_stage_frequency_per_task(df, ax, model_to_marker=None, model_to_color=None, title=None):
     if df is None or df.empty or 'stage' not in df.columns or 'task' not in df.columns or 'task_progression' not in df.columns:
-        st.info("No data or required columns ('stage', 'task', 'task_progression') found for this plot.")
         return
 
     # Filter out SB-VRB perturbation for this specific plot
@@ -314,7 +340,6 @@ def plot_stage_frequency_per_task(df, model_to_marker=None, model_to_color=None)
         df_filtered = df.copy()
 
     if df_filtered.empty:
-        st.info("No data available after filtering out SB-VRB.")
         return
 
     df_plot = df_filtered.copy()
@@ -329,8 +354,6 @@ def plot_stage_frequency_per_task(df, model_to_marker=None, model_to_color=None)
     unique_models = sorted(df_plot['model'].unique()) if 'model' in df_plot.columns else ['Unknown']
     unique_tasks = sorted(df_plot['task'].unique())
 
-    fig, ax = plt.subplots(figsize=(6, 4))
-    
     x_offset_width = 0.8 / len(unique_models)
     x_base = np.arange(len(unique_tasks))
     
@@ -382,16 +405,15 @@ def plot_stage_frequency_per_task(df, model_to_marker=None, model_to_color=None)
     
     # Stage Legend at the bottom
     ax.legend(handles=stage_legend_elements, title='Stage', loc='upper center', 
-              bbox_to_anchor=(0.5, -1.0), ncol=min(len(ordered_stages), 5))
+              bbox_to_anchor=(0.5, -0.6), ncol=min(len(ordered_stages), 5))
     
-    buf = io.BytesIO()
+    if title:
+        ax.set_title(title)
+    
     # Manual adjustment to prevent shrinking while making room for labels and legend
-    fig.subplots_adjust(bottom=0.35)
-    fig.savefig(buf, format="png", bbox_inches='tight')
-    plt.close(fig)
-    st.image(buf)
+    ax.get_figure().subplots_adjust(bottom=0.35)
 
-def plot_task_progression_timesteps_per_task(df, model_to_marker=None, model_to_color=None):
+def plot_task_progression_timesteps_per_task(df, ax, model_to_marker=None, model_to_color=None, title=None):
     # Find the correct column name for timestamps
     col_name = None
     for col in ['task_progression_timesteps', 'task_progression_timestamps', 'task_progression_timstamps']:
@@ -400,7 +422,6 @@ def plot_task_progression_timesteps_per_task(df, model_to_marker=None, model_to_
             break
 
     if col_name is None or 'task' not in df.columns:
-        st.info("No data or required columns ('task', 'task_progression_timestamps') found for this plot.")
         return
 
     # Filter out SB-VRB perturbation for this specific plot
@@ -410,7 +431,6 @@ def plot_task_progression_timesteps_per_task(df, model_to_marker=None, model_to_
         df_filtered = df.copy()
 
     if df_filtered.empty:
-        st.info("No data available after filtering out SB-VRB.")
         return
 
     df_plot = df_filtered.copy()
@@ -427,7 +447,6 @@ def plot_task_progression_timesteps_per_task(df, model_to_marker=None, model_to_
         # Determine max stages
         max_stages = df_plot['parsed_ts'].apply(lambda x: len(x) if isinstance(x, list) else 0).max()
         if max_stages == 0:
-            st.info("No valid timestamp data found.")
             return
 
         def get_durations(ts_list):
@@ -440,7 +459,6 @@ def plot_task_progression_timesteps_per_task(df, model_to_marker=None, model_to_
                 prev_ts = ts
             return durations
 
-        fig, ax = plt.subplots(figsize=(6, 4))
         x_offset_width = 0.8 / len(unique_models)
         x_base = np.arange(len(unique_tasks))
         
@@ -487,17 +505,180 @@ def plot_task_progression_timesteps_per_task(df, model_to_marker=None, model_to_
         from matplotlib.patches import Patch
         stage_legend_elements = [Patch(facecolor=stage_colors[i], label=f'Stage {i+1}') for i in range(max_stages)]
         ax.legend(handles=stage_legend_elements, title='Stage Step', loc='upper center',
-                  bbox_to_anchor=(0.5, -1.0), ncol=min(max_stages, 5))
+                  bbox_to_anchor=(0.5, -0.6), ncol=min(max_stages, 5))
         
-        buf = io.BytesIO()
+        if title:
+            ax.set_title(title)
+        
         # Manual adjustment to prevent shrinking while making room for labels and legend
-        fig.subplots_adjust(bottom=0.35)
-        fig.savefig(buf, format="png", bbox_inches='tight')
-        plt.close(fig)
-        st.image(buf)
+        ax.get_figure().subplots_adjust(bottom=0.35)
         
     except Exception as e:
-        st.error(f"Error plotting average timesteps: {e}")
+        print(f"Error plotting average timesteps: {e}")
+
+def prepare_report_data(df):
+    """Pre-processes the dataframe for reporting, calculating additional metrics."""
+    df = df.copy()
+    
+    # Identify the correct timestamp column
+    col_name = None
+    for col in ['task_progression_timesteps', 'task_progression_timestamps', 'task_progression_timstamps']:
+        if col in df.columns:
+            col_name = col
+            break
+            
+    if col_name:
+        def get_comp_time(row):
+            if row.get('task_progression') == 1:
+                try:
+                    ts = ast.literal_eval(row[col_name]) if isinstance(row[col_name], str) else row[col_name]
+                    return ts[-1] if isinstance(ts, list) and len(ts) > 0 else np.nan
+                except:
+                    return np.nan
+            return np.nan
+        df['completion_time'] = df.apply(get_comp_time, axis=1)
+    
+    # Clean perturbation column
+    if 'perturbation' in df.columns:
+        df['clean_pert'] = df['perturbation'].apply(lambda x: x.replace("['", "").replace("']", "") if isinstance(x, str) else str(x))
+    
+    return df
+
+def generate_comprehensive_report(df_full, model_to_marker, model_to_color):
+    """Generates a multi-page PDF report with all plots for all perturbations."""
+    df_report = prepare_report_data(df_full)
+    
+    # Define metrics to plot
+    # Each entry: {col, title, ylabel, type}
+    metrics = [
+        {'col': 'binary_SR', 'title': 'Success Rate', 'ylabel': 'Success Rate', 'type': 'bayesian'},
+        {'col': 'task_progression', 'title': 'Task Progression', 'ylabel': 'Task Progression', 'type': 'bar'},
+        {'col': 'completion_time', 'title': 'Time to Completion', 'ylabel': 'Average Completion Time', 'type': 'bar'},
+        {'col': 'joint_vel_var', 'title': 'Joint Velocity Variance', 'ylabel': 'Mean Variance', 'type': 'bar'},
+        {'col': 'joint_acc_var', 'title': 'Joint Acceleration Variance', 'ylabel': 'Mean Variance', 'type': 'bar'},
+        {'col': 'joint_jerk', 'title': 'Joint Jerk', 'ylabel': 'Mean Jerk', 'type': 'bar'},
+        {'col': 'cart_jerk', 'title': 'Cartesian Jerk', 'ylabel': 'Mean Jerk', 'type': 'bar'},
+        {'col': 'joint_path_length', 'title': 'Joint Path Length', 'ylabel': 'Mean Path Length', 'type': 'bar'},
+        {'col': 'cart_path_length', 'title': 'Cartesian Path Length', 'ylabel': 'Mean Path Length', 'type': 'bar'},
+        {'col': 'collisions_env', 'title': 'Environment Collisions', 'ylabel': 'Count', 'type': 'bar'},
+        {'col': 'object_drops', 'title': 'Object Drops', 'ylabel': 'Count', 'type': 'bar'},
+    ]
+    
+    available_perts = sorted(df_report['clean_pert'].unique()) if 'clean_pert' in df_report.columns else []
+    
+    buffer = io.BytesIO()
+    with PdfPages(buffer) as pdf:
+        # Title Page
+        fig = plt.figure(figsize=(11, 8.5))
+        plt.axis('off')
+        plt.text(0.5, 0.6, "REALM Toolkit: Comprehensive Experiment Report", ha='center', va='center', fontsize=24, fontweight='bold')
+        plt.text(0.5, 0.4, f"Generated for {len(df_report)} trials across {len(available_perts)} perturbations", ha='center', va='center', fontsize=16)
+        pdf.savefig(fig)
+        plt.close(fig)
+
+        # Legend Page (Reference)
+        fig, ax = plt.subplots(figsize=(11, 2))
+        plot_model_legend(ax, model_to_marker, model_to_color)
+        pdf.savefig(fig, bbox_inches='tight')
+        plt.close(fig)
+
+        # Iterate over metrics
+        for m_config in metrics:
+            m_col = m_config['col']
+            if m_col not in df_report.columns and m_col != 'binary_SR':
+                continue
+                
+            # 1. "Together" plot (All perturbations)
+            fig, (ax, ax_leg) = plt.subplots(2, 1, figsize=(12, 8.5), gridspec_kw={'height_ratios': [7, 1]})
+            if m_config['type'] == 'bayesian':
+                # Re-use logic for Success Rate
+                task_stats = df_report.groupby(['task', 'model'])['binary_SR'].agg(['sum', 'count']).reset_index()
+                task_stats = task_stats.sort_values(['task', 'model'])
+                labels = [f"{row['task']} - {row['model']}" for _, row in task_stats.iterrows()]
+                successes = task_stats['sum'].tolist()
+                failures = (task_stats['count'] - task_stats['sum']).tolist()
+                colors = [model_to_color[row['model']] for _, row in task_stats.iterrows()]
+                symbols = [model_to_marker[row['model']] for _, row in task_stats.iterrows()]
+                model_names = task_stats['model'].tolist()
+                plot_bayesian_violin(ax, labels, successes, failures, colors, symbols=symbols, model_names=model_names, model_colors=model_to_color, title=f"{m_config['title']} (All Perturbations)", fontsize=14)
+            else:
+                # Bar charts
+                metric_df = df_report[df_report[m_col].notna()].copy()
+                if not metric_df.empty:
+                    stats = metric_df.groupby(['task', 'model'])[m_col].mean().reset_index()
+                    stats = stats.sort_values(['task', 'model'])
+                    labels = [f"{row['task']} - {row['model']}" for _, row in stats.iterrows()]
+                    values = stats[m_col].tolist()
+                    colors = [model_to_color[row['model']] for _, row in stats.iterrows()]
+                    symbols = [model_to_marker[row['model']] for _, row in stats.iterrows()]
+                    model_names = stats['model'].tolist()
+                    plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel=m_config['ylabel'], title=f"{m_config['title']} (All Perturbations)", fontsize=10)
+            
+            plot_model_legend(ax_leg, model_to_marker, model_to_color)
+            pdf.savefig(fig, bbox_inches='tight')
+            plt.close(fig)
+            
+            # 2. "Individual" plots (Per perturbation)
+            for pert in available_perts:
+                pert_df = df_report[df_report['clean_pert'] == pert]
+                fig, (ax, ax_leg) = plt.subplots(2, 1, figsize=(12, 8.5), gridspec_kw={'height_ratios': [7, 1]})
+                
+                if m_config['type'] == 'bayesian':
+                    task_stats = pert_df.groupby(['task', 'model'])['binary_SR'].agg(['sum', 'count']).reset_index()
+                    if not task_stats.empty:
+                        task_stats = task_stats.sort_values(['task', 'model'])
+                        labels = [f"{row['task']} - {row['model']}" for _, row in task_stats.iterrows()]
+                        successes = task_stats['sum'].tolist()
+                        failures = (task_stats['count'] - task_stats['sum']).tolist()
+                        colors = [model_to_color[row['model']] for _, row in task_stats.iterrows()]
+                        symbols = [model_to_marker[row['model']] for _, row in task_stats.iterrows()]
+                        model_names = task_stats['model'].tolist()
+                        plot_bayesian_violin(ax, labels, successes, failures, colors, symbols=symbols, model_names=model_names, model_colors=model_to_color, title=f"{m_config['title']} - {pert}", fontsize=14)
+                else:
+                    metric_df = pert_df[pert_df[m_col].notna()].copy()
+                    if not metric_df.empty:
+                        stats = metric_df.groupby(['task', 'model'])[m_col].mean().reset_index()
+                        stats = stats.sort_values(['task', 'model'])
+                        labels = [f"{row['task']} - {row['model']}" for _, row in stats.iterrows()]
+                        values = stats[m_col].tolist()
+                        colors = [model_to_color[row['model']] for _, row in stats.iterrows()]
+                        symbols = [model_to_marker[row['model']] for _, row in stats.iterrows()]
+                        model_names = stats['model'].tolist()
+                        plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel=m_config['ylabel'], title=f"{m_config['title']} - {pert}", fontsize=10)
+                
+                if ax.has_data():
+                    plot_model_legend(ax_leg, model_to_marker, model_to_color)
+                    pdf.savefig(fig, bbox_inches='tight')
+                plt.close(fig)
+
+        # 3. Stage-related Metrics
+        stage_metrics = [
+            {'func': plot_stage_frequency, 'title': 'Failure Stage Frequency'},
+            {'func': plot_stage_frequency_per_task, 'title': 'Failure Stage Frequency per Task'},
+            {'func': plot_task_progression_timesteps_per_task, 'title': 'Stage Timesteps per Task'}
+        ]
+
+        for sm in stage_metrics:
+            # Together
+            fig, (ax, ax_leg) = plt.subplots(2, 1, figsize=(12, 8.5), gridspec_kw={'height_ratios': [7, 1]})
+            sm['func'](df_report, ax, model_to_marker=model_to_marker, model_to_color=model_to_color, title=f"{sm['title']} (All Perturbations)")
+            plot_model_legend(ax_leg, model_to_marker, model_to_color)
+            pdf.savefig(fig, bbox_inches='tight')
+            plt.close(fig)
+
+            # Individually
+            for pert in available_perts:
+                pert_df = df_report[df_report['clean_pert'] == pert]
+                if pert_df.empty:
+                    continue
+                fig, (ax, ax_leg) = plt.subplots(2, 1, figsize=(12, 8.5), gridspec_kw={'height_ratios': [7, 1]})
+                sm['func'](pert_df, ax, model_to_marker=model_to_marker, model_to_color=model_to_color, title=f"{sm['title']} - {pert}")
+                plot_model_legend(ax_leg, model_to_marker, model_to_color)
+                pdf.savefig(fig, bbox_inches='tight')
+                plt.close(fig)
+
+    buffer.seek(0)
+    return buffer
 
 def plot_bayesian_violin(ax, labels, successes, failures, colors, symbols=None, model_names=None, model_colors=None, title=None, fontsize=20):
     x_positions = np.arange(len(labels))
@@ -582,10 +763,10 @@ def plot_bayesian_violin(ax, labels, successes, failures, colors, symbols=None, 
         ax.set_title("Binary Success Rate (Bayesian Posterior)", fontsize=fontsize+2, y=1.05, fontstyle='italic')
 
     # Manual adjustment to prevent shrinking while making room for rotated labels
-    fig.subplots_adjust(bottom=0.35)
+    ax.get_figure().subplots_adjust(bottom=0.35)
     return ax
 
-def plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols=None, model_names=None, model_colors=None, title=None, ylabel=None, fontsize=12):
+def plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols=None, model_names=None, model_colors=None, title=None, ylabel=None, fontsize=12, hline=None, hline_label=None):
     x_positions = np.arange(len(labels))
     
     # Extract group names for labeling and dividers
@@ -599,6 +780,13 @@ def plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols=None, mod
             
     # Plot bars
     ax.bar(x_positions, values, color=colors, edgecolor='none')
+
+    # Plot baseline if provided
+    if hline is not None:
+        ax.axhline(y=hline, color='gray', linestyle='--', linewidth=1.5, alpha=0.8, label=hline_label)
+        # Add legend if we have a baseline
+        if hline_label:
+            ax.legend(loc='upper right', fontsize=fontsize-4)
     
     # Plot symbols on top
     if symbols:
@@ -622,8 +810,10 @@ def plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols=None, mod
         ax.text(center_x, -0.05, group_label, ha=ha, va="top", fontsize=fontsize-2, rotation=rot)
         
     ax.set_xlim(-0.5, len(labels) - 0.5)
-    # Automatically adjust ylim to fit symbols
+    # Automatically adjust ylim to fit symbols and baseline
     max_val = max(values) if values else 1.0
+    if hline is not None:
+        max_val = max(max_val, hline)
     ax.set_ylim(0, max(1.1, max_val + 0.15))
     if ylabel:
         ax.set_ylabel(ylabel, fontsize=fontsize)
@@ -632,11 +822,11 @@ def plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols=None, mod
         ax.set_title(title, fontsize=fontsize+2)
         
     # Manual adjustment to prevent shrinking while making room for rotated labels
-    fig.subplots_adjust(bottom=0.35)
+    ax.get_figure().subplots_adjust(bottom=0.35)
     return ax
 
-def render_model_legend(model_to_marker, model_to_color):
-    """Render a standalone legend infographic for models."""
+def plot_model_legend(ax, model_to_marker, model_to_color):
+    """Core logic to plot the model legend on a given ax."""
     if not model_to_marker:
         return
     
@@ -644,8 +834,6 @@ def render_model_legend(model_to_marker, model_to_color):
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
     
-    # Create a wide, short figure
-    fig, ax = plt.subplots(figsize=(10, 0.8))
     ax.axis('off')
     
     # Use two handles for each model: a patch for the bar/violin color and a Line2D for the marker shape
@@ -662,13 +850,15 @@ def render_model_legend(model_to_marker, model_to_color):
     from matplotlib.legend_handler import HandlerTuple
     ax.legend(handles=legend_elements, labels=unique_models, loc='center', ncol=min(len(unique_models), 5), 
               title="Models", frameon=False, fontsize=10, handler_map={tuple: HandlerTuple(ndivide=None)})
-    
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches='tight', transparent=True)
-    plt.close(fig)
-    st.image(buf)
 
-def render_metric_bar_chart(df, metric_col, title, ylabel, model_to_marker, model_to_color, color=None):
+def render_model_legend(model_to_marker, model_to_color):
+    """Render a standalone legend infographic for models."""
+    fig, ax = plt.subplots(figsize=(10, 0.8))
+    plot_model_legend(ax, model_to_marker, model_to_color)
+    st.pyplot(fig, transparent=True)
+    plt.close(fig)
+
+def render_metric_bar_chart(df, metric_col, title, ylabel, model_to_marker, model_to_color, color=None, hline=None, hline_label=None):
     """Helper to render a grouped bar chart for a specific metric."""
     if metric_col not in df.columns:
         st.info(f"Column '{metric_col}' not found in data.")
@@ -698,12 +888,10 @@ def render_metric_bar_chart(df, metric_col, title, ylabel, model_to_marker, mode
         model_names = stats['model'].tolist()
         
         fig, ax = plt.subplots(figsize=(6, 4))
-        plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel=ylabel, title=title)
+        plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel=ylabel, title=title, hline=hline, hline_label=hline_label)
         
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", bbox_inches='tight')
+        st.pyplot(fig)
         plt.close(fig)
-        st.image(buf)
     except Exception as e:
         st.error(f"Error plotting {title}: {e}")
 
@@ -735,6 +923,11 @@ st.sidebar.markdown("---")
 
 st.sidebar.title("Experiment Browser")
 search_query = st.sidebar.text_input("Search Experiments", key="search_query", placeholder="e.g. baseline")
+
+# Master Select All for the entire logs directory
+if os.path.exists(LOGS_DIR):
+    st.sidebar.checkbox("Select All Experiments", key=f"fold_{LOGS_DIR}", on_change=_on_folder_checkbox_change, args=(LOGS_DIR,))
+
 render_tree(LOGS_DIR, search_query=search_query)
 
 # Collect selected runs from checkboxes
@@ -746,34 +939,6 @@ if selected_runs:
     if sorted(selected_runs) != st.session_state.get('last_selected_runs', []):
         st.session_state.video_page = 0
         st.session_state.last_selected_runs = sorted(selected_runs)
-
-    # --- Header ---
-    st.title("Experiment Dashboard")
-    
-    # Get common path prefix to identify experiment and model
-    if len(selected_runs) == 1:
-        rel_path = os.path.relpath(selected_runs[0], LOGS_DIR)
-        path_parts = rel_path.split(os.sep)
-        experiment_name = path_parts[0] if len(path_parts) > 0 else "N/A"
-        model_name = path_parts[1] if len(path_parts) > 1 else "N/A"
-    else:
-        # Try to find common parts
-        common_path = os.path.commonpath(selected_runs)
-        rel_common_path = os.path.relpath(common_path, LOGS_DIR)
-        path_parts = rel_common_path.split(os.sep)
-        experiment_name = path_parts[0] if len(path_parts) > 0 and path_parts[0] != '.' else "Multiple Experiments"
-        model_name = path_parts[1] if len(path_parts) > 1 else "Multiple Models"
-    
-    run_ids = [os.path.basename(run) for run in selected_runs]
-    
-    st.markdown(f"<h3><b>Experiment:</b> {experiment_name}</h3><h3><b>Model:</b> {model_name}</h3>", unsafe_allow_html=True)
-    if len(run_ids) == 1:
-        st.markdown(f"<h3><b>Run ID:</b> {run_ids[0]}</h3>", unsafe_allow_html=True)
-    else:
-        with st.expander(f"Selected {len(run_ids)} Runs"):
-            st.write(", ".join(run_ids))
-
-    st.divider()
 
     # --- Data Loading and Aggregation ---
     all_reports = []
@@ -793,10 +958,64 @@ if selected_runs:
         st.warning("No reports found for the selected run(s).")
         st.stop()
         
-    df = pd.concat(all_reports, ignore_index=True)
+    df_full = pd.concat(all_reports, ignore_index=True)
+    df = dashboard_utils.filter_dataframe(df_full, selected_tasks, selected_perts)
 
-    # Apply filters to dataframe
-    df = dashboard_utils.filter_dataframe(df, selected_tasks, selected_perts)
+    # --- Header ---
+    # Get common path prefix to identify experiment and model
+    if len(selected_runs) == 1:
+        rel_path = os.path.relpath(selected_runs[0], LOGS_DIR)
+        path_parts = rel_path.split(os.sep)
+        experiment_name = path_parts[0] if len(path_parts) > 0 else "N/A"
+        model_name = path_parts[1] if len(path_parts) > 1 else "N/A"
+    else:
+        # Try to find common parts
+        common_path = os.path.commonpath(selected_runs)
+        rel_common_path = os.path.relpath(common_path, LOGS_DIR)
+        path_parts = rel_common_path.split(os.sep)
+        experiment_name = path_parts[0] if len(path_parts) > 0 and path_parts[0] != '.' else "Multiple Experiments"
+        model_name = path_parts[1] if len(path_parts) > 1 else "Multiple Models"
+    
+    run_ids = [os.path.basename(run) for run in selected_runs]
+    
+    # Model markers and colors (needed for report and legend)
+    unique_models = sorted(df_full['model'].unique())
+    model_to_marker = {model: MARKERS[i % len(MARKERS)] for i, model in enumerate(unique_models)}
+    model_to_color = {model: COLORS[i % len(COLORS)] for i, model in enumerate(unique_models)}
+
+    st.title("Experiment Dashboard")
+    col_title, col_download, col_csv = st.columns([2, 1, 1])
+    with col_title:
+        st.markdown(f"<h3><b>Experiment:</b> {experiment_name}</h3><h3><b>Model:</b> {model_name}</h3>", unsafe_allow_html=True)
+    with col_download:
+        if st.button("📄 Generate PDF Report", use_container_width=True):
+            with st.spinner("Generating comprehensive PDF report..."):
+                pdf_buffer = generate_comprehensive_report(df_full, model_to_marker, model_to_color)
+                st.download_button(
+                    label="⬇️ Download PDF",
+                    data=pdf_buffer,
+                    file_name=f"REALM_Report_{experiment_name.replace(' ', '_')}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+    with col_csv:
+        # Generate CSV from the filtered dataframe 'df'
+        csv_data = df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📊 Download CSV",
+            data=csv_data,
+            file_name=f"REALM_Data_{experiment_name.replace(' ', '_')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+
+    if len(run_ids) == 1:
+        st.markdown(f"<h3><b>Run ID:</b> {run_ids[0]}</h3>", unsafe_allow_html=True)
+    else:
+        with st.expander(f"Selected {len(run_ids)} Runs"):
+            st.write(", ".join(run_ids))
+
+    st.divider()
 
     # --- Experiment Status ---
     st.header("Experiment Status")
@@ -841,9 +1060,6 @@ if selected_runs:
 
     # --- Model Legend (Global) ---
     if df is not None and not df.empty:
-        unique_models = sorted(df['model'].unique())
-        model_to_marker = {model: MARKERS[i % len(MARKERS)] for i, model in enumerate(unique_models)}
-        model_to_color = {model: COLORS[i % len(COLORS)] for i, model in enumerate(unique_models)}
         render_model_legend(model_to_marker, model_to_color)
 
     # --- Plots ---
@@ -879,11 +1095,8 @@ if selected_runs:
 
                     fig, ax = plt.subplots(figsize=(6, 4))
                     plot_bayesian_violin(ax, labels, successes, failures, colors, symbols=symbols, model_names=model_names, model_colors=model_to_color, fontsize=12)
-
-                    buf = io.BytesIO()
-                    fig.savefig(buf, format="png", bbox_inches='tight')
+                    st.pyplot(fig)
                     plt.close(fig)
-                    st.image(buf)
 
             with c2:
                 st.subheader("Success Rate per Perturbation")
@@ -902,11 +1115,8 @@ if selected_runs:
 
                     fig, ax = plt.subplots(figsize=(6, 4))
                     plot_bayesian_violin(ax, labels, successes, failures, colors, symbols=symbols, model_names=model_names, model_colors=model_to_color, fontsize=12)
-
-                    buf = io.BytesIO()
-                    fig.savefig(buf, format="png", bbox_inches='tight')
+                    st.pyplot(fig)
                     plt.close(fig)
-                    st.image(buf)
                 else:
                     st.info("No binary_SR column found for plots.")
             
@@ -937,11 +1147,8 @@ if selected_runs:
 
                     fig, ax = plt.subplots(figsize=(6, 4))
                     plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel="Task Progression")
-
-                    buf = io.BytesIO()
-                    fig.savefig(buf, format="png", bbox_inches='tight')
+                    st.pyplot(fig)
                     plt.close(fig)
-                    st.image(buf)
                 else:
                     st.info("No task_progression column found for plots.")
             
@@ -959,11 +1166,8 @@ if selected_runs:
 
                     fig, ax = plt.subplots(figsize=(6, 4))
                     plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel="Task Progression")
-
-                    buf = io.BytesIO()
-                    fig.savefig(buf, format="png", bbox_inches='tight')
+                    st.pyplot(fig)
                     plt.close(fig)
-                    st.image(buf)
                 else:
                     st.info("No task_progression column found for plots.")
 
@@ -972,11 +1176,17 @@ if selected_runs:
             c5, c6 = st.columns(2)
             with c5:
                 st.subheader("Failure Stage Frequency")
-                plot_stage_frequency(df, model_to_marker=model_to_marker, model_to_color=model_to_color)
+                fig, ax = plt.subplots(figsize=(6, 4))
+                plot_stage_frequency(df, ax, model_to_marker=model_to_marker, model_to_color=model_to_color)
+                st.pyplot(fig)
+                plt.close(fig)
             
             with c6:
                 st.subheader("Failure Stage Frequency per Task")
-                plot_stage_frequency_per_task(df, model_to_marker=model_to_marker, model_to_color=model_to_color)
+                fig, ax = plt.subplots(figsize=(6, 4))
+                plot_stage_frequency_per_task(df, ax, model_to_marker=model_to_marker, model_to_color=model_to_color)
+                st.pyplot(fig)
+                plt.close(fig)
             
             st.caption("*Note: Data for perturbation 'SB-VRB' is excluded from the 'Failure Stage Frequency per Task' plot.*")
                 
@@ -985,6 +1195,17 @@ if selected_runs:
             # --- Auxiliary Metrics ---
             st.header("Auxiliary metrics")
             
+            with st.expander("Metric Interpretations (How to read these numbers?)"):
+                st.markdown(r"""
+                These metrics are computed from joint positions ($q$) and time steps ($dt$) using numerical differentiation:
+                
+                *   **Joint Velocity Variance** ($rad^2/s^2 \cdot samples$): Measures total velocity variation over the rollout ($ \sum (v - \bar{v})^2 $). Higher values indicate oscillating or non-smooth speed profiles.
+                *   **Joint Acceleration Variance** ($rad^2/s^4 \cdot samples$): Measures the consistency of acceleration. High values indicate frequent changes in force, often seen as vibration or jitter.
+                *   **Jerk (Joint/Cartesian)** ($rad/s^3$ or $m/s^3$): The time derivative of acceleration ($da/dt$). Represents the "shakiness" of the motion. High jerk is mechanically damaging and indicates poor control stability.
+                *   **Path Length** ($rad$ or $m$): The total distance traveled in joint space or Cartesian space ($ \sum ||\Delta q|| $). Lower is more efficient; high values suggest the robot is "wandering" or taking an inefficient route.
+                *   **Collisions/Drops**: Raw count of safety or reliability failures during the rollout. Ideally should be zero.
+                """)
+
             c7, c8 = st.columns(2)
             with c7:
                 st.subheader("Time to Completion per Task (Successful Only)")
@@ -1016,11 +1237,8 @@ if selected_runs:
                                 
                                 fig, ax = plt.subplots(figsize=(6, 4))
                                 plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel="Average Completion Time")
-                                
-                                buf = io.BytesIO()
-                                fig.savefig(buf, format="png", bbox_inches='tight')
+                                st.pyplot(fig)
                                 plt.close(fig)
-                                st.image(buf)
                             except Exception as e:
                                 st.error(f"Error parsing timestamps: {e}")
                         else:
@@ -1032,7 +1250,10 @@ if selected_runs:
             
             with c8:
                 st.subheader("Stage Timesteps per Task")
-                plot_task_progression_timesteps_per_task(df, model_to_marker=model_to_marker, model_to_color=model_to_color)
+                fig, ax = plt.subplots(figsize=(6, 4))
+                plot_task_progression_timesteps_per_task(df, ax, model_to_marker=model_to_marker, model_to_color=model_to_color)
+                st.pyplot(fig)
+                plt.close(fig)
             
             st.caption("*Note: Data for perturbation 'SB-VRB' is excluded from the 'Stage Timesteps per Task' plot.*")
             
@@ -1041,25 +1262,25 @@ if selected_runs:
             # --- Physical and Kinematic Metrics ---
             c9, c10 = st.columns(2)
             with c9:
-                render_metric_bar_chart(df, 'joint_vel_var', "Joint Velocity Variance", "Mean Variance", model_to_marker, model_to_color, color='lightblue')
+                render_metric_bar_chart(df, 'joint_vel_var', "Joint Velocity Variance", "Mean Variance (rad²/s²·samples)", model_to_marker, model_to_color, color='lightblue')
             with c10:
-                render_metric_bar_chart(df, 'joint_acc_var', "Joint Acceleration Variance", "Mean Variance", model_to_marker, model_to_color, color='lightblue')
+                render_metric_bar_chart(df, 'joint_acc_var', "Joint Acceleration Variance", "Mean Variance (rad²/s⁴·samples)", model_to_marker, model_to_color, color='lightblue')
 
             st.divider()
 
             c11, c12 = st.columns(2)
             with c11:
-                render_metric_bar_chart(df, 'joint_jerk', "Joint Jerk", "Mean Jerk", model_to_marker, model_to_color, color='lightblue')
+                render_metric_bar_chart(df, 'joint_jerk', "Joint Jerk", "Mean Jerk (rad/s³)", model_to_marker, model_to_color, color='lightblue')
             with c12:
-                render_metric_bar_chart(df, 'cart_jerk', "Cartesian Jerk", "Mean Jerk", model_to_marker, model_to_color, color='lightblue')
+                render_metric_bar_chart(df, 'cart_jerk', "Cartesian Jerk", "Mean Jerk (m/s³)", model_to_marker, model_to_color, color='lightblue')
 
             st.divider()
 
             c13, c14 = st.columns(2)
             with c13:
-                render_metric_bar_chart(df, 'joint_path_length', "Joint Path Length", "Mean Path Length", model_to_marker, model_to_color, color='lightgreen')
+                render_metric_bar_chart(df, 'joint_path_length', "Joint Path Length", "Mean Path Length (rad)", model_to_marker, model_to_color, color='lightgreen')
             with c14:
-                render_metric_bar_chart(df, 'cart_path_length', "Cartesian Path Length", "Mean Path Length", model_to_marker, model_to_color, color='lightgreen')
+                render_metric_bar_chart(df, 'cart_path_length', "Cartesian Path Length", "Mean Path Length (m)", model_to_marker, model_to_color, color='lightgreen')
 
             st.divider()
 
