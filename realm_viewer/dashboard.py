@@ -20,6 +20,7 @@ from plots import (
     render_model_legend,
 )
 from report import generate_comprehensive_report
+import analytics
 
 st.set_page_config(layout="wide", page_title="Experiment Dashboard")
 
@@ -634,6 +635,215 @@ if selected_runs:
                 st.info("No data available.")
     except Exception as e:
         st.error(f"Error in Plots: {e}")
+
+    # --- Causal Insights ---
+    st.header("Causal Insights")
+
+    with st.expander("How this analysis works — methodology & thresholds", expanded=False):
+        st.markdown("""
+### Overview
+
+The Causal Insights engine automatically scans every **(task × perturbation) cell** in the
+full unfiltered dataset (i.e. it ignores any sidebar filters, so that baselines are always
+computed over the complete experiment). It runs four independent analytics passes and presents
+all findings sorted by a **unified merit score**.
+
+A cell must contain **at least 10 trials** to appear in any analysis.
+
+---
+
+### Unified Merit Score
+
+Every finding — regardless of which pass produced it — is scored by:
+
+```
+merit = ES × SF × SW × CW     (all components ∈ [0, 1])
+```
+
+| Component | Meaning | Formula |
+|---|---|---|
+| **ES** — Effect Size | How large is the detected deviation? | Pass-specific (see below) |
+| **SF** — Significance Factor | How statistically confident are we? | `min(1, −log₁₀(p) / 4)` |
+| **SW** — Sample Weight | How many trials back this finding? | `0.6 + 0.4 × min(1, (n−10) / 15)` |
+| **CW** — Category Weight | Epistemic value of the finding type | stage=1.0, SR=0.9, metric=0.7, ranking≤0.10 |
+
+**SF calibration** — `min(1, −log₁₀(p) / 4)` maps:
+
+| p-value | SF |
+|---|---|
+| ≤ 0.0001 | 1.00 (saturates) |
+| 0.001 | 0.75 |
+| 0.01 | 0.50 |
+| 0.05 | 0.33 |
+| 0.15 | 0.21 |
+
+**SW calibration** — penalises cells near the 10-trial minimum:
+
+| n (trials) | SW |
+|---|---|
+| 10 (minimum) | 0.60 |
+| 17 | 0.79 |
+| ≥ 25 | 1.00 |
+
+Because all four components are in [0, 1], the final merit score is always in [0, 1], making
+findings from different passes **directly comparable**. This replaces the previous system where
+stage-deviation scores ranged 0–6, success-rate scores ranged 0–0.7, and metric-anomaly scores
+were raw sigma values — three incompatible scales that produced mis-orderings.
+
+---
+
+### Pass 1 — Failure Stage Deviation
+
+**Underlying distribution: Categorical / Multinomial.** The failure stage is a discrete
+label drawn from a task-specific set of categories (e.g. GRASP, REACH, LIFT_LARGE for
+pick tasks; ROTATED for rotation tasks). The number of possible categories differs by task
+and is determined by the task's stage graph — it is *not* a continuous signal and not
+normally distributed. The appropriate test for comparing two categorical distributions is
+the **chi-squared test**, which makes no distributional assumption beyond the multinomial
+sampling model.
+
+**Question:** Does a specific (task, perturbation) combination shift the failure-stage
+distribution in a statistically unusual way compared to how that task normally fails?
+
+**Method:**
+1. For every task, compute the **task-wide baseline** stage distribution — proportions of
+   trials ending in each stage pooled across all perturbations of that task.
+2. For every (task, perturbation) cell, compute the **cell stage distribution**.
+3. Run a **Pearson chi-squared test** (`scipy.stats.chi2_contingency`) with a 2×k contingency
+   table: row 0 = cell stage counts, row 1 = (task total − cell) stage counts.
+   This tests whether the cell's categorical distribution is consistent with the task baseline.
+4. Find the single stage with the **largest absolute deviation** (cell % − task baseline %).
+   Pre-filter: only proceed if this deviation is **≥ 10 percentage points**.
+5. Collect all raw p-values and compute **BH-adjusted p-values**:
+   `p_adj[i] = min(1, p_raw[i] × m / rank_ascending[i])`
+   where m = total candidates and rank is 1-based ascending by p-value.
+   Only findings with `p_adj < 0.15` (FDR ≤ 15%) are shown.
+
+**Merit components:**
+- **ES** = `|Δpp|` — deviation in proportion for the most-shifted stage (a mean deviation,
+  valid for categorical data regardless of the full distribution shape)
+- **SF** = `min(1, −log₁₀(p_bh_adj) / 4)` — uses the BH-adjusted p-value
+- **SW** = sample weight from `n_cell`
+- **CW** = 1.0 (most causal finding type — shows *which mechanism* changes)
+
+---
+
+### Pass 2 — Success Rate Anomalies
+
+**Underlying distribution: Binomial.** `binary_SR` is 0 or 1 per trial, so the number of
+successes in n trials follows a Binomial(n, θ) distribution. We use **Bayesian inference
+with a uniform Beta(1,1) prior** — the same conjugate update used by the violin plots —
+giving posterior Beta(S+1, F+1) for S successes and F=n−S failures.
+
+**Question:** Is a cell's success rate a genuine outlier relative to *both* the task average
+and the perturbation average simultaneously?
+
+**Admission criteria (all three must hold):**
+- |cell posterior mean SR − task posterior mean SR| ≥ **15 percentage points**
+- |cell posterior mean SR − perturbation posterior mean SR| ≥ **15 percentage points**
+- Both deltas in the **same direction** (both above average, or both below)
+
+All baseline means are themselves Bayesian posterior means `(S+1)/(N+2)` rather than raw
+proportions — this shrinks extreme estimates from small groups toward 0.5.
+
+**Method:**
+1. Compute Bayesian posterior means for the task and perturbation baselines.
+2. Apply the three admission criteria above.
+3. Measure significance via **Bayesian posterior overlap (Monte Carlo)**:
+   - Draw 8000 samples from `Beta(S_cell+1, F_cell+1)` and `Beta(S_rest+1, F_rest+1)`
+     (where "rest" = all other perturbations of the same task).
+   - Compute P(θ_cell > θ_rest).
+   - Convert to a two-tailed p-equivalent: `p_equiv = 2 × (1 − max(P, 1−P))`.
+   - This makes no normality assumption and is exact for any sample size.
+4. Compute a **Wilson score 95% CI** for the cell SR (shown in headline).
+
+**Merit components:**
+- **ES** = `min(1, |Cohen's h| / π)` — arc-sine effect size on Bayesian posterior means:
+  `h = 2·arcsin(√SR_cell_bayes) − 2·arcsin(√SR_task_bayes)`
+  The arc-sine transform is the variance-stabilising transform for proportions.
+- **SF** = `min(1, −log₁₀(p_bayes_equiv) / 4)`
+- **SW** = sample weight from `n`
+- **CW** = 0.9
+
+---
+
+### Pass 3 — Metric Anomalies in Failures
+
+**Question:** Among trials that *failed*, does a cell show unusually high values on any
+safety or motion-quality metric?
+
+**Metrics examined:**
+| Metric | Description |
+|---|---|
+| `collisions_env` | Environment collisions per trial |
+| `object_drops` | Object drops per trial |
+| `joint_vel_var` | Joint velocity variance (rad²/s²·samples) |
+| `cart_jerk` | Cartesian jerk (m/s³) |
+
+These are continuous auxiliary measurements for which a **normal approximation is
+reasonable**. Unlike binary SR (Binomial) or failure stage (Categorical/Multinomial),
+these signals are real-valued and approximately symmetric around their means in practice.
+
+**Method:**
+1. Restrict to **failed trials only** (`binary_SR == 0`).
+2. Compute the **global failure mean and std** for each metric, pooled over all cells.
+3. For each (task, perturbation) cell (with ≥10 failed trials), compute the cell mean.
+4. Pre-filter: only proceed if the cell mean is **> 1.5σ above the global failure mean**.
+5. Convert sigma to a one-tailed p-value via `scipy.stats.norm.sf(sigma)`.
+
+**Merit components:**
+- **ES** = `min(1, sigma / 4)` — normalised deviation in mean, capped at 4σ=1.0
+- **SF** = `min(1, −log₁₀(norm.sf(sigma)) / 4)` — σ=1.5→SF≈0.29; σ=3.0→SF≈0.72
+- **SW** = sample weight from `n_failed` in cell
+- **CW** = 0.7 (informative but less directly causal than stage or SR findings)
+
+---
+
+### Pass 4 — Ranking Summaries
+
+Context findings always shown last via fixed low merit scores (0.04–0.10):
+
+| Finding | Merit | How computed |
+|---|---|---|
+| Best / Worst (task × pert) combo | 0.10 / 0.09 | Cell with highest / lowest mean SR (min 5 trials) |
+| Most consistent perturbation | 0.08 | Lowest std of per-task SR across tasks |
+| Most variable perturbation | 0.07 | Highest std of per-task SR across tasks |
+| Task most sensitive to perturbation | 0.06 | Largest (max SR − min SR) range across its perturbations |
+| Hardest / Easiest task | 0.05 / 0.04 | Lowest / highest mean SR across all perturbations |
+
+These are always below any real statistical finding (which have merit ≥ 0.12 in practice).
+
+---
+
+### Sorting & Deduplication
+
+All findings are merged and **sorted descending by merit score**. A cell can appear in multiple
+passes — a co-occurrence is itself informative (e.g. the same condition causing both a stage
+spike and elevated collisions).
+
+---
+
+### What is *not* shown
+
+- Cells with **< 10 trials** (unreliable proportions)
+- Stage deviations **< 10pp** (not practically meaningful even if significant)
+- SR anomalies that are outliers vs. only *one* baseline (task or perturbation), not both
+- Metric anomalies **< 1.5σ**
+- Stage findings with BH-adjusted p ≥ 0.15 (FDR > 15%)
+""")
+
+    try:
+        if df_full is not None and not df_full.empty:
+            findings = analytics.run_all_analytics(df_full, min_cell_size=10)
+            if findings:
+                for f in findings:
+                    st.markdown(f"- {f['headline']}")
+            else:
+                st.info("Not enough data to compute causal insights (need ≥10 trials per cell).")
+        else:
+            st.info("No data available for analysis.")
+    except Exception as e:
+        st.error(f"Error computing causal insights: {e}")
 
     # --- Aggregated Reports ---
     st.header("Aggregated Reports")
