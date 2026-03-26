@@ -44,8 +44,17 @@ def get_subdirectories(path):
         return []
 
 def is_experiment_folder(path):
-    """Check if the folder contains 'reports' or 'videos' subdirectories."""
-    return os.path.isdir(os.path.join(path, "reports")) or os.path.isdir(os.path.join(path, "videos"))
+    """Check if the folder contains 'reports' or 'videos' subdirectories, or parquet video files."""
+    if os.path.isdir(os.path.join(path, "reports")):
+        return True
+    
+    v_path = os.path.join(path, "videos")
+    if os.path.isdir(v_path):
+        # Has mp4 or parquet files
+        if glob.glob(os.path.join(v_path, "*.mp4")) or glob.glob(os.path.join(v_path, "*.parquet")):
+            return True
+            
+    return False
 
 def load_reports(experiment_path):
     reports_path = os.path.join(experiment_path, "reports")
@@ -79,7 +88,49 @@ def get_videos(experiment_path):
     videos_path = os.path.join(experiment_path, "videos")
     if not os.path.exists(videos_path):
         return []
-    return sorted(glob.glob(os.path.join(videos_path, "*.mp4")))
+    
+    mp4s = sorted(glob.glob(os.path.join(videos_path, "*.mp4")))
+    if mp4s:
+        return mp4s
+        
+    # If no mp4s, check for parquets but don't return them as "video paths" for st.video
+    # But we can return a special indicator or just let the dashboard handle it.
+    # For now, let's keep it simple: if there are parquets and no mp4s, 
+    # the user will use the Unpacker button.
+    return []
+
+def unpack_parquet_videos(parquet_path, output_dir):
+    """Unpacks videos from a parquet file and saves them as MP4 files."""
+    if not os.path.exists(parquet_path):
+        return False, f"Parquet file not found: {parquet_path}"
+    
+    try:
+        df = pd.read_parquet(parquet_path)
+        if 'video' not in df.columns:
+            return False, "Parquet file does not contain a 'video' column."
+        
+        os.makedirs(output_dir, exist_ok=True)
+        unpacked_count = 0
+        
+        for i, row in df.iterrows():
+            task = row.get('task', 'unknown_task')
+            pert = row.get('perturbation', 'unknown_pert')
+            repeat = row.get('repeat', i)
+            video_data = row['video']
+            
+            # Clean perturbation name for filename
+            clean_pert = str(pert).replace("['", "").replace("']", "").replace(" ", "_")
+            # Use 'rollout' in name so existing filter_videos logic finds it easily
+            filename = f"rollout_{task}_{clean_pert}_{repeat}.mp4"
+            filepath = os.path.join(output_dir, filename)
+            
+            with open(filepath, 'wb') as f:
+                f.write(video_data)
+            unpacked_count += 1
+            
+        return True, f"Successfully unpacked {unpacked_count} videos to {output_dir}"
+    except Exception as e:
+        return False, f"Error unpacking parquet: {e}"
 
 def load_experiment_metadata(experiment_path):
     """Loads metadata.json from the experiment directory."""

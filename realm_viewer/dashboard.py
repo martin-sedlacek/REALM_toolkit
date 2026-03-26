@@ -204,7 +204,7 @@ def _video_next_page():
 
 # --- Video section (fragment for partial reruns) ---
 @st.fragment
-def render_video_section(video_paths, selected_tasks, selected_perts):
+def render_video_section(video_paths, selected_tasks, selected_perts, run_paths=None):
     """Render paginated video gallery. Runs as a fragment so page navigation
     does not trigger a full dashboard rerun."""
     filtered_videos = dashboard_utils.filter_videos(video_paths, selected_tasks, selected_perts)
@@ -213,7 +213,19 @@ def render_video_section(video_paths, selected_tasks, selected_perts):
         if video_paths:
             st.info("No videos match the selected filters.")
         else:
-            st.info("No videos found.")
+            # Check if there are parquets in the selected runs
+            has_parquets = False
+            if run_paths:
+                for rp in run_paths:
+                    v_dir = os.path.join(rp, "videos")
+                    if os.path.exists(v_dir) and any(f.endswith(".parquet") for f in os.listdir(v_dir)):
+                        has_parquets = True
+                        break
+            
+            if has_parquets:
+                st.info("No MP4 videos found, but parquet videos are available. Use the **Unpack Parquet Videos** button above to view them.")
+            else:
+                st.info("No videos found.")
         return
 
     total_videos = len(filtered_videos)
@@ -244,7 +256,7 @@ def render_video_section(video_paths, selected_tasks, selected_perts):
     cols = st.columns(3)
     for i, video_path in enumerate(page_videos):
         with cols[i % 3]:
-            st.video(video_path)
+            st.video(video_path, format="video/mp4")
             st.caption(os.path.relpath(video_path, LOGS_DIR))
 
 # ===== SIDEBAR =====
@@ -303,12 +315,12 @@ if selected_runs:
             all_reports.append(report)
         all_videos.extend(get_cached_videos(run_path))
 
-    if not all_reports:
-        st.warning("No reports found for the selected run(s).")
-        st.stop()
-
-    df_full = pd.concat(all_reports, ignore_index=True)
-    df = dashboard_utils.filter_dataframe(df_full, selected_tasks, selected_perts)
+    if all_reports:
+        df_full = pd.concat(all_reports, ignore_index=True)
+        df = dashboard_utils.filter_dataframe(df_full, selected_tasks, selected_perts)
+    else:
+        df_full = pd.DataFrame()
+        df = pd.DataFrame()
 
     # --- Header ---
     if len(selected_runs) == 1:
@@ -857,8 +869,41 @@ spike and elevated collisions).
         st.error(f"Error in Aggregated Reports: {e}")
 
     # --- Videos (paginated fragment) ---
-    st.header("Videos")
-    render_video_section(all_videos, selected_tasks, selected_perts)
+    vid_col1, vid_col2 = st.columns([1, 1])
+    with vid_col1:
+        st.header("Videos")
+    
+    # Check for parquets to show the button
+    has_parquets = False
+    for rp in selected_runs:
+        v_dir = os.path.join(rp, "videos")
+        if os.path.exists(v_dir) and any(f.endswith(".parquet") for f in os.listdir(v_dir)):
+            has_parquets = True
+            break
+            
+    if has_parquets:
+        with vid_col2:
+            st.write("") # Spacer
+            if st.button("📦 Unpack All Parquet Videos", use_container_width=True):
+                unpacked_any = False
+                for rp in selected_runs:
+                    v_dir = os.path.join(rp, "videos")
+                    if os.path.exists(v_dir):
+                        p_files = [f for f in os.listdir(v_dir) if f.endswith(".parquet")]
+                        for pf in p_files:
+                            p_path = os.path.join(v_dir, pf)
+                            success, msg = dashboard_utils.unpack_parquet_videos(p_path, v_dir)
+                            if success:
+                                unpacked_any = True
+                
+                if unpacked_any:
+                    st.success("Successfully unpacked parquet videos!")
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error("Failed to unpack any parquet videos.")
+
+    render_video_section(all_videos, selected_tasks, selected_perts, run_paths=selected_runs)
 else:
     if not os.path.exists(LOGS_DIR):
         st.error(f"Logs directory '{LOGS_DIR}' not found.")
