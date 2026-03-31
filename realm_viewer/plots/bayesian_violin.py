@@ -1,8 +1,13 @@
 import numpy as np
 from scipy.stats import beta
+import plotly.graph_objects as go
+
+from ._markers import mpl_marker_to_plotly
 
 
-def plot_bayesian_violin(ax, labels, successes, failures, colors, symbols=None, model_names=None, model_colors=None, title=None, fontsize=20):
+def plot_bayesian_violin(labels, successes, failures, colors, symbols=None, model_names=None, model_colors=None, title=None, fontsize=12):
+    fig = go.Figure(layout=dict(title=dict(text='')))
+
     x_positions = np.arange(len(labels))
     successes_arr = np.array(successes, dtype=float).flatten()
     failures_arr = np.array(failures, dtype=float).flatten()
@@ -25,11 +30,11 @@ def plot_bayesian_violin(ax, labels, successes, failures, colors, symbols=None, 
             unique_tasks.append(task_name)
             unique_indices.append(data_idx)
 
-        alpha = S + 1
-        beta_param = F + 1
+        alpha_param = S + 1
+        beta_param_val = F + 1
 
         y = np.linspace(0.001, 0.999, 300)
-        density = beta.pdf(y, alpha, beta_param)
+        density = beta.pdf(y, alpha_param, beta_param_val)
 
         if density.max() == 0:
             continue
@@ -40,36 +45,105 @@ def plot_bayesian_violin(ax, labels, successes, failures, colors, symbols=None, 
 
         x = density_clipped / density.max() * 0.325
 
-        ax.fill_betweenx(y_clipped, x_positions[data_idx] - x, x_positions[data_idx] + x, color=color, alpha=1)
+        # Build closed polygon: left edge going up, right edge going down
+        x_violin = np.concatenate([
+            x_positions[data_idx] - x,
+            (x_positions[data_idx] + x)[::-1],
+        ])
+        y_violin = np.concatenate([y_clipped, y_clipped[::-1]])
 
-        posterior_mean = alpha / (alpha + beta_param)
-        ax.hlines(y=posterior_mean, xmin=x_positions[data_idx] - 0.105, xmax=x_positions[data_idx] + 0.105, color='black', linewidth=2)
+        posterior_mean = alpha_param / (alpha_param + beta_param_val)
+        label = labels[data_idx]
 
+        fig.add_trace(go.Scatter(
+            x=x_violin.tolist(),
+            y=y_violin.tolist(),
+            fill='toself',
+            fillcolor=str(color),
+            line=dict(color=str(color), width=0),
+            mode='lines',
+            showlegend=False,
+            hovertemplate=f'{label}<br>Mean: {posterior_mean:.3f}<br>N: {S + F}<extra></extra>',
+            name=label,
+        ))
+
+        # Posterior mean horizontal line
+        fig.add_trace(go.Scatter(
+            x=[x_positions[data_idx] - 0.105, x_positions[data_idx] + 0.105],
+            y=[posterior_mean, posterior_mean],
+            mode='lines',
+            line=dict(color='black', width=2),
+            showlegend=False,
+            hoverinfo='skip',
+        ))
+
+        # Model marker above violin
         if symbols_arr is not None and data_idx < len(symbols_arr):
             marker = symbols_arr[data_idx]
             if marker:
-                y_pos = y_clipped.max() + 0.05 if len(y_clipped) > 0 else 1.05
-                ax.scatter(x_positions[data_idx], y_pos, marker=marker, color='black', edgecolor='black', s=50, zorder=5)
+                y_pos = float(y_clipped.max()) + 0.05 if len(y_clipped) > 0 else 1.05
+                fig.add_trace(go.Scatter(
+                    x=[float(x_positions[data_idx])],
+                    y=[y_pos],
+                    mode='markers',
+                    marker=dict(symbol=mpl_marker_to_plotly(str(marker)), color='black', size=8),
+                    showlegend=False,
+                    hoverinfo='skip',
+                ))
+
+    shapes = []
+    annotations = []
 
     for i, task_label in enumerate(unique_tasks):
         start_idx = unique_indices[i]
-        end_idx = unique_indices[i+1] if i + 1 < len(unique_indices) else len(labels)
+        end_idx = unique_indices[i + 1] if i + 1 < len(unique_indices) else len(labels)
         group_size = end_idx - start_idx
 
         if i > 0:
-            ax.axvline(x_positions[start_idx] - 0.5, color="gray", linewidth=0.8, linestyle='--')
+            shapes.append(dict(
+                type='line',
+                x0=float(x_positions[start_idx]) - 0.5,
+                x1=float(x_positions[start_idx]) - 0.5,
+                y0=0, y1=1.15,
+                line=dict(color='gray', width=0.8, dash='dash'),
+                xref='x', yref='y',
+            ))
 
-        center_x = start_idx + (group_size - 1) / 2
-        ax.text(center_x, -0.05, task_label, ha='right', va="top", fontsize=fontsize-2, rotation=45)
+        center_x = float(start_idx + (group_size - 1) / 2)
+        annotations.append(dict(
+            x=center_x,
+            y=-0.1,
+            xref='x', yref='paper',
+            text=task_label,
+            showarrow=False,
+            textangle=-45,
+            font=dict(size=max(8, fontsize - 2)),
+            xanchor='right',
+            yanchor='top',
+        ))
 
-    ax.set_xlim(-0.5, len(labels) - 0.5)
-    ax.set_ylim(0, 1.15)
-    ax.set_ylabel("Success Rate", fontsize=fontsize, labelpad=15)
-    ax.set_xticks([])
-    if title:
-        ax.set_title(title, fontsize=fontsize+2, y=1.05, fontstyle='italic')
-    else:
-        ax.set_title("Binary Success Rate (Bayesian Posterior)", fontsize=fontsize+2, y=1.05, fontstyle='italic')
+    fig.update_layout(
+        shapes=shapes,
+        annotations=annotations,
+        yaxis=dict(
+            range=[0, 1.15],
+            title='Success Rate',
+            title_font=dict(size=fontsize),
+            gridcolor='lightgray',
+        ),
+        xaxis=dict(
+            range=[-0.5, len(labels) - 0.5],
+            showticklabels=False,
+            showgrid=False,
+        ),
+        title=dict(
+            text=title or 'Binary Success Rate (Bayesian Posterior)',
+            font=dict(size=fontsize + 2),
+        ),
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        margin=dict(b=150, t=60, l=60, r=20),
+        height=420,
+    )
 
-    ax.get_figure().subplots_adjust(bottom=0.35)
-    return ax
+    return fig

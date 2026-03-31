@@ -1,9 +1,25 @@
 import numpy as np
-import matplotlib.pyplot as plt
 import streamlit as st
+import plotly.graph_objects as go
+
+from ._markers import mpl_marker_to_plotly
 
 
-def plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols=None, model_names=None, model_colors=None, title=None, ylabel=None, fontsize=12, hline=None, hline_label=None):
+def _base_layout(title, ylabel, fontsize):
+    d = dict(
+        yaxis=dict(title=ylabel, title_font=dict(size=fontsize), gridcolor='lightgray'),
+        xaxis=dict(showticklabels=False, showgrid=False),
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        margin=dict(b=150, t=50, l=60, r=20),
+        height=420,
+    )
+    if title:
+        d['title'] = dict(text=title, font=dict(size=fontsize + 2))
+    return d
+
+
+def plot_grouped_bars_with_symbols(labels, values, colors, symbols=None, model_names=None, model_colors=None, title=None, ylabel=None, fontsize=12, hline=None, hline_label=None):
     x_positions = np.arange(len(labels))
 
     group_names = [l.split(' - ')[0] for l in labels]
@@ -14,46 +30,101 @@ def plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols=None, mod
             unique_groups.append(g)
             unique_indices.append(i)
 
-    ax.bar(x_positions, values, color=colors, edgecolor='none')
+    fig = go.Figure(layout=dict(title=dict(text='')))
 
-    if hline is not None:
-        ax.axhline(y=hline, color='gray', linestyle='--', linewidth=1.5, alpha=0.8, label=hline_label)
-        if hline_label:
-            ax.legend(loc='upper right', fontsize=fontsize-4)
+    # One bar per label, colored individually
+    fig.add_trace(go.Bar(
+        x=x_positions.tolist(),
+        y=values,
+        marker_color=colors,
+        marker_line_width=0,
+        showlegend=False,
+        hovertemplate=[
+            f'{labels[i]}<br>{ylabel or "Value"}: {values[i]:.3f}<extra></extra>'
+            for i in range(len(labels))
+        ],
+    ))
 
+    # Markers above bars
     if symbols:
-        for i, (v, s) in enumerate(zip(values, symbols)):
-            if s:
-                ax.scatter(x_positions[i], v + 0.05, marker=s, color='black', edgecolor='black', s=50, zorder=5)
+        max_val = max(values) if values else 1.0
+        offset = max_val * 0.04 if max_val > 0 else 0.05
+        for i, (val, sym) in enumerate(zip(values, symbols)):
+            if sym:
+                fig.add_trace(go.Scatter(
+                    x=[int(x_positions[i])],
+                    y=[val + offset],
+                    mode='markers',
+                    marker=dict(symbol=mpl_marker_to_plotly(sym), color='black', size=8),
+                    showlegend=False,
+                    hoverinfo='skip',
+                ))
 
+    shapes = []
+    annotations = []
+
+    # Reference line
+    if hline is not None:
+        shapes.append(dict(
+            type='line',
+            x0=-0.5, x1=len(labels) - 0.5,
+            y0=hline, y1=hline,
+            line=dict(color='gray', dash='dash', width=1.5),
+            xref='x', yref='y',
+        ))
+        if hline_label:
+            annotations.append(dict(
+                x=len(labels) - 0.6, y=hline,
+                xref='x', yref='y',
+                text=hline_label,
+                showarrow=False,
+                xanchor='right',
+                font=dict(size=max(8, fontsize - 4)),
+            ))
+
+    # Group separators and task labels below x-axis
     for i, group_label in enumerate(unique_groups):
         start_idx = unique_indices[i]
-        end_idx = unique_indices[i+1] if i + 1 < len(unique_indices) else len(labels)
+        end_idx = unique_indices[i + 1] if i + 1 < len(unique_indices) else len(labels)
         group_size = end_idx - start_idx
 
         if i > 0:
-            ax.axvline(x_positions[start_idx] - 0.5, color="gray", linewidth=0.8, linestyle='--')
+            shapes.append(dict(
+                type='line',
+                x0=x_positions[start_idx] - 0.5, x1=x_positions[start_idx] - 0.5,
+                y0=0, y1=1,
+                line=dict(color='gray', width=0.8, dash='dash'),
+                xref='x', yref='paper',
+            ))
 
-        center_x = start_idx + (group_size - 1) / 2
-        ax.text(center_x, -0.05, group_label, ha='right', va="top", fontsize=fontsize-2, rotation=45)
+        center_x = float(start_idx + (group_size - 1) / 2)
+        annotations.append(dict(
+            x=center_x,
+            y=-0.12,
+            xref='x', yref='paper',
+            text=group_label,
+            showarrow=False,
+            textangle=-45,
+            font=dict(size=max(8, fontsize - 2)),
+            xanchor='right',
+            yanchor='top',
+        ))
 
-    ax.set_xlim(-0.5, len(labels) - 0.5)
     max_val = max(values) if values else 1.0
     if hline is not None:
         max_val = max(max_val, hline)
-    ax.set_ylim(0, max(1.1, max_val + 0.15))
-    if ylabel:
-        ax.set_ylabel(ylabel, fontsize=fontsize)
-    ax.set_xticks([])
-    if title:
-        ax.set_title(title, fontsize=fontsize+2)
 
-    ax.get_figure().subplots_adjust(bottom=0.35)
-    return ax
+    layout = _base_layout(title, ylabel, fontsize)
+    layout['yaxis']['range'] = [0, max(1.1, max_val + 0.15)]
+    layout['xaxis']['range'] = [-0.5, len(labels) - 0.5]
+    layout['shapes'] = shapes
+    layout['annotations'] = annotations
+
+    fig.update_layout(**layout)
+    return fig
 
 
 def render_metric_bar_chart(df, metric_col, title, ylabel, model_to_marker, model_to_color, color=None, hline=None, hline_label=None):
-    """Helper to render a grouped bar chart for a specific metric."""
     if metric_col not in df.columns:
         st.info(f"Column '{metric_col}' not found in data.")
         return
@@ -78,10 +149,7 @@ def render_metric_bar_chart(df, metric_col, title, ylabel, model_to_marker, mode
         symbols = [model_to_marker[row['model']] for _, row in stats.iterrows()]
         model_names = stats['model'].tolist()
 
-        fig, ax = plt.subplots(figsize=(6, 4))
-        plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel=ylabel, title=title, hline=hline, hline_label=hline_label)
-
-        st.pyplot(fig)
-        plt.close(fig)
+        fig = plot_grouped_bars_with_symbols(labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel=ylabel, title=title, hline=hline, hline_label=hline_label)
+        st.plotly_chart(fig, use_container_width=True)
     except Exception as e:
         st.error(f"Error plotting {title}: {e}")
