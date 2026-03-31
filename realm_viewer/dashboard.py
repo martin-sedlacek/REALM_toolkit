@@ -1,8 +1,5 @@
 import streamlit as st
 import os
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 import numpy as np
 import io
 import dashboard_utils
@@ -447,10 +444,8 @@ if selected_runs:
                         symbols.append(model_to_marker[row['model']])
                         model_names.append(row['model'])
 
-                    fig, ax = plt.subplots(figsize=(6, 4))
-                    plot_bayesian_violin(ax, labels, successes, failures, colors, symbols=symbols, model_names=model_names, model_colors=model_to_color, fontsize=12)
-                    st.pyplot(fig)
-                    plt.close(fig)
+                    fig = plot_bayesian_violin(labels, successes, failures, colors, symbols=symbols, model_names=model_names, model_colors=model_to_color, fontsize=12)
+                    st.plotly_chart(fig, use_container_width=True)
 
             with c2:
                 st.subheader("Success Rate per Perturbation")
@@ -467,10 +462,8 @@ if selected_runs:
                     symbols = [model_to_marker[row['model']] for _, row in pert_stats.iterrows()]
                     model_names = pert_stats['model'].tolist()
 
-                    fig, ax = plt.subplots(figsize=(6, 4))
-                    plot_bayesian_violin(ax, labels, successes, failures, colors, symbols=symbols, model_names=model_names, model_colors=model_to_color, fontsize=12)
-                    st.pyplot(fig)
-                    plt.close(fig)
+                    fig = plot_bayesian_violin(labels, successes, failures, colors, symbols=symbols, model_names=model_names, model_colors=model_to_color, fontsize=12)
+                    st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.info("No binary_SR column found for plots.")
 
@@ -498,10 +491,8 @@ if selected_runs:
                         symbols.append(model_to_marker[row['model']])
                         model_names.append(row['model'])
 
-                    fig, ax = plt.subplots(figsize=(6, 4))
-                    plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel="Task Progression")
-                    st.pyplot(fig)
-                    plt.close(fig)
+                    fig = plot_grouped_bars_with_symbols(labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel="Task Progression")
+                    st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.info("No task_progression column found for plots.")
 
@@ -517,10 +508,8 @@ if selected_runs:
                     symbols = [model_to_marker[row['model']] for _, row in pert_prog.iterrows()]
                     model_names = pert_prog['model'].tolist()
 
-                    fig, ax = plt.subplots(figsize=(6, 4))
-                    plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel="Task Progression")
-                    st.pyplot(fig)
-                    plt.close(fig)
+                    fig = plot_grouped_bars_with_symbols(labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel="Task Progression")
+                    st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.info("No task_progression column found for plots.")
 
@@ -529,17 +518,13 @@ if selected_runs:
             c5, c6 = st.columns(2)
             with c5:
                 st.subheader("Failure Stage Frequency")
-                fig, ax = plt.subplots(figsize=(6, 4))
-                plot_stage_frequency(df, ax, model_to_marker=model_to_marker, model_to_color=model_to_color)
-                st.pyplot(fig)
-                plt.close(fig)
+                fig = plot_stage_frequency(df, model_to_marker=model_to_marker, model_to_color=model_to_color)
+                st.plotly_chart(fig, use_container_width=True)
 
             with c6:
                 st.subheader("Failure Stage Frequency per Task")
-                fig, ax = plt.subplots(figsize=(6, 4))
-                plot_stage_frequency_per_task(df, ax, model_to_marker=model_to_marker, model_to_color=model_to_color)
-                st.pyplot(fig)
-                plt.close(fig)
+                fig = plot_stage_frequency_per_task(df, model_to_marker=model_to_marker, model_to_color=model_to_color)
+                st.plotly_chart(fig, use_container_width=True)
 
             st.caption("*Note: Data for perturbation 'SB-VRB' is excluded from the 'Failure Stage Frequency per Task' plot.*")
 
@@ -584,10 +569,8 @@ if selected_runs:
                                 symbols = [model_to_marker[row['model']] for _, row in task_time.iterrows()]
                                 model_names = task_time['model'].tolist()
 
-                                fig, ax = plt.subplots(figsize=(6, 4))
-                                plot_grouped_bars_with_symbols(ax, labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel="Average Completion Time")
-                                st.pyplot(fig)
-                                plt.close(fig)
+                                fig = plot_grouped_bars_with_symbols(labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel="Average Completion Time")
+                                st.plotly_chart(fig, use_container_width=True)
                             except Exception as e:
                                 st.error(f"Error parsing timestamps: {e}")
                         else:
@@ -599,10 +582,8 @@ if selected_runs:
 
             with c8:
                 st.subheader("Stage Timesteps per Task")
-                fig, ax = plt.subplots(figsize=(6, 4))
-                plot_task_progression_timesteps_per_task(df, ax, model_to_marker=model_to_marker, model_to_color=model_to_color)
-                st.pyplot(fig)
-                plt.close(fig)
+                fig = plot_task_progression_timesteps_per_task(df, model_to_marker=model_to_marker, model_to_color=model_to_color)
+                st.plotly_chart(fig, use_container_width=True)
 
             st.caption("*Note: Data for perturbation 'SB-VRB' is excluded from the 'Stage Timesteps per Task' plot.*")
 

@@ -1,35 +1,52 @@
-import matplotlib.pyplot as plt
 import streamlit as st
+import plotly.graph_objects as go
+
+from ._markers import mpl_marker_to_plotly
 
 
-def plot_model_legend(ax, model_to_marker, model_to_color):
-    """Core logic to plot the model legend on a given ax."""
+def plot_model_legend(model_to_marker, model_to_color):
     if not model_to_marker:
-        return
+        return go.Figure()
 
     unique_models = sorted(model_to_marker.keys())
-    from matplotlib.lines import Line2D
-    from matplotlib.patches import Patch
+    fig = go.Figure()
 
-    ax.axis('off')
-
-    # Use two handles for each model: a patch for the bar/violin color and a Line2D for the marker shape
-    legend_elements = []
     for m in unique_models:
         color = model_to_color[m]
-        marker = model_to_marker[m]
-        legend_elements.append((Patch(facecolor=color, edgecolor='black', alpha=0.8),
-                               Line2D([0], [0], marker=marker, color='w', markerfacecolor='black',
-                                      markeredgecolor='black', markersize=10)))
+        marker_symbol = mpl_marker_to_plotly(model_to_marker[m])
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None],
+            mode='markers',
+            name=m,
+            marker=dict(
+                symbol=marker_symbol,
+                color=color,
+                size=14,
+                line=dict(color='black', width=1),
+            ),
+            showlegend=True,
+        ))
 
-    from matplotlib.legend_handler import HandlerTuple
-    ax.legend(handles=legend_elements, labels=unique_models, loc='center', ncol=min(len(unique_models), 5),
-              title="Models", frameon=False, fontsize=10, handler_map={tuple: HandlerTuple(ndivide=None)})
+    fig.update_layout(
+        legend=dict(
+            orientation='h',
+            y=0.5, x=0.5,
+            xanchor='center',
+            yanchor='middle',
+            title='Models',
+            font=dict(size=11),
+        ),
+        height=70,
+        margin=dict(t=0, b=0, l=0, r=0),
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+    )
+
+    return fig
 
 
 def render_model_legend(model_to_marker, model_to_color):
-    """Render a standalone legend infographic for models."""
-    fig, ax = plt.subplots(figsize=(10, 0.8))
-    plot_model_legend(ax, model_to_marker, model_to_color)
-    st.pyplot(fig, transparent=True)
-    plt.close(fig)
+    fig = plot_model_legend(model_to_marker, model_to_color)
+    st.plotly_chart(fig, use_container_width=True)
