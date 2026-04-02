@@ -63,6 +63,7 @@ def plot_bayesian_violin(labels, successes, failures, colors, symbols=None, mode
             line=dict(color=str(color), width=0),
             mode='lines',
             showlegend=False,
+            hoveron='fills',
             hovertemplate=f'{label}<br>Mean: {posterior_mean:.3f}<br>N: {S + F}<extra></extra>',
             name=label,
         ))

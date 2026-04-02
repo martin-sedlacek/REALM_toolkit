@@ -3,3 +3,4 @@ from .stage_analysis import get_stage_progression_and_colors, plot_stage_frequen
 from .bar_charts import plot_grouped_bars_with_symbols, render_metric_bar_chart
 from .timeline import plot_task_progression_timesteps_per_task
 from .legend import plot_model_legend, render_model_legend
+from .dirichlet_progression import plot_dirichlet_progression_violin

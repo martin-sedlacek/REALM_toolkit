@@ -15,6 +15,7 @@ from plots import (
     plot_task_progression_timesteps_per_task,
     plot_model_legend,
     render_model_legend,
+    plot_dirichlet_progression_violin,
 )
 from report import generate_comprehensive_report
 import analytics
@@ -473,25 +474,12 @@ if selected_runs:
             with c3:
                 st.subheader("Task Progression per Task")
                 if 'task_progression' in df.columns:
-                    task_prog = df.groupby(['task', 'model'])['task_progression'].mean().reset_index()
-                    task_prog = task_prog.sort_values(['task', 'model'])
-
-                    labels = [f"{row['task']} - {row['model']}" for _, row in task_prog.iterrows()]
-                    values = task_prog['task_progression'].tolist()
-                    colors = [model_to_color[row['model']] for _, row in task_prog.iterrows()]
-                    symbols = [model_to_marker[row['model']] for _, row in task_prog.iterrows()]
-                    model_names = task_prog['model'].tolist()
-
-                    all_tasks_prog = df.groupby('model')['task_progression'].mean().reset_index()
-                    all_tasks_prog = all_tasks_prog.sort_values('model')
-                    for _, row in all_tasks_prog.iterrows():
-                        labels.append(f"All Tasks (Mean) - {row['model']}")
-                        values.append(row['task_progression'])
-                        colors.append(model_to_color[row['model']])
-                        symbols.append(model_to_marker[row['model']])
-                        model_names.append(row['model'])
-
-                    fig = plot_grouped_bars_with_symbols(labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel="Task Progression")
+                    fig = plot_dirichlet_progression_violin(
+                        df,
+                        group_col='task',
+                        model_to_color=model_to_color,
+                        model_to_marker=model_to_marker,
+                    )
                     st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.info("No task_progression column found for plots.")
@@ -499,16 +487,12 @@ if selected_runs:
             with c4:
                 st.subheader("Task Progression per Perturbation")
                 if 'task_progression' in df.columns:
-                    pert_prog = df.groupby(['clean_pert', 'model'])['task_progression'].mean().reset_index()
-                    pert_prog = pert_prog.sort_values(['clean_pert', 'model'])
-
-                    labels = [f"{row['clean_pert']} - {row['model']}" for _, row in pert_prog.iterrows()]
-                    values = pert_prog['task_progression'].tolist()
-                    colors = [model_to_color[row['model']] for _, row in pert_prog.iterrows()]
-                    symbols = [model_to_marker[row['model']] for _, row in pert_prog.iterrows()]
-                    model_names = pert_prog['model'].tolist()
-
-                    fig = plot_grouped_bars_with_symbols(labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel="Task Progression")
+                    fig = plot_dirichlet_progression_violin(
+                        df,
+                        group_col='clean_pert',
+                        model_to_color=model_to_color,
+                        model_to_marker=model_to_marker,
+                    )
                     st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.info("No task_progression column found for plots.")
