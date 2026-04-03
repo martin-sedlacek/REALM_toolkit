@@ -8,15 +8,18 @@ _RNG = np.random.default_rng(42)
 _N_SAMPLES = 2000
 
 
-def _infer_modes(values, min_count=3):
+def _infer_modes(values):
     """
-    Return sorted unique task_progression values (rounded to 3 dp) that appear
-    at least *min_count* times.  Rare values (artefacts from mixed staging
-    schemes across perturbations) are dropped.
+    Return sorted unique task_progression values (rounded to 3 dp).
+
+    Uses an adaptive count floor of max(1, N // 50) to filter out rare
+    floating-point artefacts from mixed staging schemes without discarding
+    legitimate modes in small-N datasets (e.g. N=15 → floor=1, N=400 → floor=8).
     """
     arr = np.round(np.asarray(values, dtype=float), 3)
     arr = arr[~np.isnan(arr)]
     unique, counts = np.unique(arr, return_counts=True)
+    min_count = max(1, len(arr) // 50)
     return np.sort(unique[counts >= min_count])
 
 
@@ -107,19 +110,24 @@ def plot_dirichlet_progression_violin(
             # Dirichlet posterior parameters
             alpha = 1.0 + n_k   # shape (K,)
 
+            # Posterior mean of E[TP] = Σ mode_k * alpha_k / alpha_0
+            posterior_mean = float(modes @ (alpha / alpha.sum()))
+
             # Monte Carlo: sample θ ~ Dir(alpha), compute E[TP] = modes · θ
             theta = _RNG.dirichlet(alpha, _N_SAMPLES)   # (N_SAMPLES, K)
             expected_tp = theta @ modes                  # (N_SAMPLES,)
 
-            # KDE over the expected-TP samples
+            # KDE over the expected-TP samples.
+            # When all samples collapse to a single value (K=1 or near-zero
+            # variance), gaussian_kde raises LinAlgError. Fall back to a
+            # narrow Gaussian spike centred on the posterior mean.
+            y = np.linspace(0.0, 1.0, 300)
             try:
                 kde = gaussian_kde(expected_tp, bw_method='scott')
+                density = kde(y)
             except np.linalg.LinAlgError:
-                x_cursor += 1
-                continue
-
-            y = np.linspace(0.0, 1.0, 300)
-            density = kde(y)
+                spike_sigma = 0.015
+                density = np.exp(-0.5 * ((y - posterior_mean) / spike_sigma) ** 2)
 
             if density.max() == 0:
                 x_cursor += 1
@@ -132,9 +140,6 @@ def plot_dirichlet_progression_violin(
 
             x_poly = np.concatenate([x_cursor - x_half, (x_cursor + x_half)[::-1]])
             y_poly = np.concatenate([y_c, y_c[::-1]])
-
-            # Posterior mean of E[TP] = Σ mode_k * alpha_k / alpha_0
-            posterior_mean = float(modes @ (alpha / alpha.sum()))
             model_color = model_to_color.get(model, '#1f77b4')
 
             fig.add_trace(go.Scatter(
