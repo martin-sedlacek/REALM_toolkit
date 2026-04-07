@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "REALM Dashboard",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "REALM_LOGS=/Users/sedlam/PycharmProjects/REALM/logs /Users/sedlam/.local/bin/uv run streamlit run realm_viewer/dashboard.py --server.port ${PORT:-8501}"],
+      "port": 8501,
+      "autoPort": true
+    }
+  ]
+}
