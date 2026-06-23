@@ -344,7 +344,7 @@ if selected_runs:
     with col_title:
         st.markdown(f"<h3><b>Experiment:</b> {experiment_name}</h3><h3><b>Model:</b> {model_name}</h3>", unsafe_allow_html=True)
     with col_download:
-        if st.button("📄 Generate PDF Report", use_container_width=True):
+        if st.button("📄 Generate PDF Report", width="stretch"):
             with st.spinner("Generating comprehensive PDF report..."):
                 pdf_buffer = generate_comprehensive_report(df_full, model_to_marker, model_to_color)
                 st.download_button(
@@ -352,7 +352,7 @@ if selected_runs:
                     data=pdf_buffer,
                     file_name=f"REALM_Report_{experiment_name.replace(' ', '_')}.pdf",
                     mime="application/pdf",
-                    use_container_width=True
+                    width="stretch"
                 )
     with col_csv:
         csv_data = df.to_csv(index=False).encode('utf-8')
@@ -361,7 +361,7 @@ if selected_runs:
             data=csv_data,
             file_name=f"REALM_Data_{experiment_name.replace(' ', '_')}.csv",
             mime="text/csv",
-            use_container_width=True
+            width="stretch"
         )
 
     if len(run_ids) == 1:
@@ -446,7 +446,7 @@ if selected_runs:
                         model_names.append(row['model'])
 
                     fig = plot_bayesian_violin(labels, successes, failures, colors, symbols=symbols, model_names=model_names, model_colors=model_to_color, fontsize=12)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
 
             with c2:
                 st.subheader("Success Rate per Perturbation")
@@ -464,7 +464,7 @@ if selected_runs:
                     model_names = pert_stats['model'].tolist()
 
                     fig = plot_bayesian_violin(labels, successes, failures, colors, symbols=symbols, model_names=model_names, model_colors=model_to_color, fontsize=12)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
                 else:
                     st.info("No binary_SR column found for plots.")
 
@@ -479,8 +479,9 @@ if selected_runs:
                         group_col='task',
                         model_to_color=model_to_color,
                         model_to_marker=model_to_marker,
+                        show_average=True,
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
                 else:
                     st.info("No task_progression column found for plots.")
 
@@ -493,7 +494,7 @@ if selected_runs:
                         model_to_color=model_to_color,
                         model_to_marker=model_to_marker,
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
                 else:
                     st.info("No task_progression column found for plots.")
 
@@ -503,12 +504,12 @@ if selected_runs:
             with c5:
                 st.subheader("Failure Stage Frequency")
                 fig = plot_stage_frequency(df, model_to_marker=model_to_marker, model_to_color=model_to_color)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
 
             with c6:
                 st.subheader("Failure Stage Frequency per Task")
                 fig = plot_stage_frequency_per_task(df, model_to_marker=model_to_marker, model_to_color=model_to_color)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
 
             st.caption("*Note: Data for perturbation 'SB-VRB' is excluded from the 'Failure Stage Frequency per Task' plot.*")
 
@@ -554,7 +555,7 @@ if selected_runs:
                                 model_names = task_time['model'].tolist()
 
                                 fig = plot_grouped_bars_with_symbols(labels, values, colors, symbols, model_names, model_colors=model_to_color, ylabel="Average Completion Time")
-                                st.plotly_chart(fig, use_container_width=True)
+                                st.plotly_chart(fig, width="stretch")
                             except Exception as e:
                                 st.error(f"Error parsing timestamps: {e}")
                         else:
@@ -567,7 +568,7 @@ if selected_runs:
             with c8:
                 st.subheader("Stage Timesteps per Task")
                 fig = plot_task_progression_timesteps_per_task(df, model_to_marker=model_to_marker, model_to_color=model_to_color)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
 
             st.caption("*Note: Data for perturbation 'SB-VRB' is excluded from the 'Stage Timesteps per Task' plot.*")
 
@@ -849,7 +850,7 @@ spike and elevated collisions).
     if has_parquets:
         with vid_col2:
             st.write("") # Spacer
-            if st.button("📦 Unpack All Parquet Videos", use_container_width=True):
+            if st.button("📦 Unpack All Parquet Videos", width="stretch"):
                 unpacked_any = False
                 for rp in selected_runs:
                     v_dir = os.path.join(rp, "videos")

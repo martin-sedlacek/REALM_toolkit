@@ -9,7 +9,9 @@ from ._markers import mpl_marker_to_plotly
 
 def get_stage_progression_and_colors(df_plot):
     stage_progression = df_plot.groupby('simplified_stage')['task_progression'].mean().sort_values()
-    ordered_labels = stage_progression.index.tolist()
+    ordered_labels = [l for l in stage_progression.index if l != 'Success']
+    if 'Success' in stage_progression.index:
+        ordered_labels.append('Success')
 
     unique_tps = sorted(stage_progression.unique())
     success_tp = stage_progression.get('Success', 1.0)
@@ -72,25 +74,60 @@ def plot_stage_frequency(df, model_to_marker=None, model_to_color=None, title=No
 
     df_plot = df.copy()
     df_plot['simplified_stage'] = df_plot['stage'].apply(
-        lambda x: 'Success' if str(x).lower() == 'success' else str(x).split('_')[0].capitalize()
+        lambda x: 'Success' if str(x).lower() == 'success' else str(x).split('|')[0].strip().split('_')[0].capitalize()
     )
 
     stage_progression, ordered_labels, color_dict = get_stage_progression_and_colors(df_plot)
+
+    # Always show a "Reach" column, even when no reach failures are present in this data
+    if 'Reach' not in ordered_labels:
+        ordered_labels.insert(0, 'Reach')
+        color_dict['Reach'] = mcolors.to_hex(plt.get_cmap('Reds')(0.25))
+
     unique_models = sorted(df_plot['model'].unique()) if 'model' in df_plot.columns else ['Unknown']
 
     n_models = len(unique_models)
     x_offset_width = 0.8 / n_models
     x_base = np.arange(len(ordered_labels))
 
+    unique_tasks = sorted(df_plot['task'].unique()) if 'task' in df_plot.columns else []
+
     fig = go.Figure(layout=dict(title=dict(text='')))
 
     for i, model in enumerate(unique_models):
         model_df = df_plot[df_plot['model'] == model]
-        stage_counts = model_df['simplified_stage'].value_counts()
-        total_rows = len(model_df)
-        proportions = [stage_counts.get(l, 0) / total_rows if total_rows > 0 else 0 for l in ordered_labels]
-        stage_colors = [color_dict[label] for label in ordered_labels]
 
+        # Macro-average: compute per-task stage proportions then average equally across tasks.
+        per_task_props = []
+        if unique_tasks:
+            for task in unique_tasks:
+                cell_df = model_df[model_df['task'] == task]
+                if len(cell_df) == 0:
+                    continue
+                counts = cell_df['simplified_stage'].value_counts()
+                total = len(cell_df)
+                per_task_props.append([counts.get(l, 0) / total for l in ordered_labels])
+            if per_task_props:
+                proportions = list(np.mean(per_task_props, axis=0))
+            else:
+                proportions = [0.0] * len(ordered_labels)
+        else:
+            # Fallback: no task column available
+            stage_counts = model_df['simplified_stage'].value_counts()
+            total_rows = len(model_df)
+            proportions = [stage_counts.get(l, 0) / total_rows if total_rows > 0 else 0 for l in ordered_labels]
+
+        # Sanity-check printout: macro-averaged vs pooled proportions
+        stage_counts_pooled = model_df['simplified_stage'].value_counts()
+        total_rows = len(model_df)
+        pooled = [stage_counts_pooled.get(l, 0) / total_rows if total_rows > 0 else 0 for l in ordered_labels]
+        n_tasks_averaged = len(per_task_props) if unique_tasks else 'N/A'
+        print(f"\n[stage_frequency] model={model}  tasks_averaged={n_tasks_averaged}")
+        print(f"  {'Stage':<16}  {'Macro-avg':>10}  {'Pooled':>10}  {'Δ':>8}")
+        for l, m_p, p_p in zip(ordered_labels, proportions, pooled):
+            print(f"  {l:<16}  {m_p:>10.4f}  {p_p:>10.4f}  {m_p - p_p:>+8.4f}")
+
+        stage_colors = [color_dict[label] for label in ordered_labels]
         x_pos = (x_base + (i - (n_models - 1) / 2) * x_offset_width).tolist()
 
         fig.add_trace(go.Bar(
@@ -103,7 +140,7 @@ def plot_stage_frequency(df, model_to_marker=None, model_to_color=None, title=No
             showlegend=False,
             opacity=0.8,
             hovertemplate=[
-                f'{model} / {ordered_labels[j]}<br>Proportion: {proportions[j]:.3f}<extra></extra>'
+                f'{model} / {ordered_labels[j]}<br>Macro-avg proportion: {proportions[j]:.3f}<extra></extra>'
                 for j in range(len(ordered_labels))
             ],
         ))
@@ -121,6 +158,11 @@ def plot_stage_frequency(df, model_to_marker=None, model_to_color=None, title=No
                         hoverinfo='skip',
                     ))
 
+    note_text = (
+        'Each task is weighted equally. Bar heights are the mean of per-task stage proportions, '
+        'not a pooled proportion across all trials.'
+    )
+
     fig.update_layout(
         barmode='group',
         xaxis=dict(
@@ -134,6 +176,15 @@ def plot_stage_frequency(df, model_to_marker=None, model_to_color=None, title=No
         paper_bgcolor='white',
         margin=dict(b=120, t=50, l=60, r=20),
         height=420,
+        annotations=[dict(
+            x=0.5, y=-0.28,
+            xref='paper', yref='paper',
+            text=note_text,
+            showarrow=False,
+            font=dict(size=10, color='gray'),
+            xanchor='center',
+            yanchor='top',
+        )],
     )
     if title:
         fig.update_layout(title=dict(text=title, font=dict(size=fontsize + 2)))
@@ -155,7 +206,7 @@ def plot_stage_frequency_per_task(df, model_to_marker=None, model_to_color=None,
 
     df_plot = df_filtered.copy()
     df_plot['simplified_stage'] = df_plot['stage'].apply(
-        lambda x: 'Success' if str(x).lower() == 'success' else str(x).split('_')[0].capitalize()
+        lambda x: 'Success' if str(x).lower() == 'success' else str(x).split('|')[0].strip().split('_')[0].capitalize()
     )
 
     stage_progression, ordered_stages, color_dict = get_stage_progression_and_colors(df_plot)

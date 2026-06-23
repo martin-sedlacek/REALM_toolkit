@@ -30,6 +30,7 @@ def plot_dirichlet_progression_violin(
     model_to_marker=None,
     title=None,
     fontsize=12,
+    show_average=False,
 ):
     """
     One violin per (group, model) showing the Bayesian posterior over
@@ -201,6 +202,117 @@ def plot_dirichlet_progression_violin(
             xanchor='right',
             yanchor='top',
         ))
+
+    # --- Average column (all groups combined), appended on the right ---
+    if show_average:
+        all_vals_global = df['task_progression'].dropna().values
+        if len(all_vals_global) > 0:
+            modes_global = _infer_modes(all_vals_global)
+            K_global = len(modes_global)
+            if K_global > 0:
+                # Separator before average block
+                shapes.append(dict(
+                    type='line',
+                    x0=x_cursor - 0.5, x1=x_cursor - 0.5,
+                    y0=0, y1=1.15,
+                    line=dict(color='gray', width=0.8, dash='dash'),
+                    xref='x', yref='y',
+                ))
+
+                avg_start_x = x_cursor
+                for model in unique_models:
+                    cell_df = df[df['model'] == model] if 'model' in df.columns else df
+                    cell_vals = np.round(cell_df['task_progression'].dropna().values, 3)
+                    N = len(cell_vals)
+                    if N == 0:
+                        x_cursor += 1
+                        continue
+
+                    n_k = np.array([int(np.sum(cell_vals == m)) for m in modes_global], dtype=float)
+                    alpha = 1.0 + n_k
+                    posterior_mean = float(modes_global @ (alpha / alpha.sum()))
+
+                    theta = _RNG.dirichlet(alpha, _N_SAMPLES)
+                    expected_tp = theta @ modes_global
+
+                    y = np.linspace(0.0, 1.0, 300)
+                    try:
+                        kde = gaussian_kde(expected_tp, bw_method='scott')
+                        density = kde(y)
+                    except np.linalg.LinAlgError:
+                        spike_sigma = 0.015
+                        density = np.exp(-0.5 * ((y - posterior_mean) / spike_sigma) ** 2)
+
+                    if density.max() == 0:
+                        x_cursor += 1
+                        continue
+
+                    mask = density >= density.max() * 0.0001
+                    y_c = y[mask]
+                    d_c = density[mask]
+                    x_half = d_c / density.max() * 0.325
+                    model_color = model_to_color.get(model, '#1f77b4')
+
+                    x_poly = np.concatenate([x_cursor - x_half, (x_cursor + x_half)[::-1]])
+                    y_poly = np.concatenate([y_c, y_c[::-1]])
+
+                    fig.add_trace(go.Scatter(
+                        x=x_poly.tolist(),
+                        y=y_poly.tolist(),
+                        fill='toself',
+                        fillcolor=model_color,
+                        line=dict(color=model_color, width=0),
+                        mode='lines',
+                        showlegend=False,
+                        hoveron='fills',
+                        hovertemplate=(
+                            f'<b>Average (all tasks)</b><br>'
+                            f'Model: {model}<br>'
+                            f'N: {N} trials, {K_global} modes<br>'
+                            f'Mean E[TP]: {posterior_mean:.3f}'
+                            '<extra></extra>'
+                        ),
+                    ))
+
+                    fig.add_trace(go.Scatter(
+                        x=[x_cursor - 0.105, x_cursor + 0.105],
+                        y=[posterior_mean, posterior_mean],
+                        mode='lines',
+                        line=dict(color='black', width=2),
+                        showlegend=False,
+                        hoverinfo='skip',
+                    ))
+
+                    marker = model_to_marker.get(model)
+                    if marker:
+                        y_top = float(y_c.max()) + 0.05 if len(y_c) > 0 else 1.05
+                        fig.add_trace(go.Scatter(
+                            x=[float(x_cursor)],
+                            y=[y_top],
+                            mode='markers',
+                            marker=dict(
+                                symbol=mpl_marker_to_plotly(str(marker)),
+                                color='black',
+                                size=8,
+                            ),
+                            showlegend=False,
+                            hoverinfo='skip',
+                        ))
+
+                    x_cursor += 1
+
+                avg_center_x = (avg_start_x + x_cursor - 1) / 2
+                annotations.append(dict(
+                    x=avg_center_x,
+                    y=-0.1,
+                    xref='x', yref='paper',
+                    text='Average',
+                    showarrow=False,
+                    textangle=-45,
+                    font=dict(size=max(8, fontsize - 2)),
+                    xanchor='right',
+                    yanchor='top',
+                ))
 
     fig.update_layout(
         shapes=shapes,
