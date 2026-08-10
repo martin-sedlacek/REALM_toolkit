@@ -168,7 +168,13 @@ def plot_dirichlet_progression_violin(
                 mode='lines',
                 line=dict(color='black', width=2),
                 showlegend=False,
-                hoverinfo='skip',
+                hovertemplate=(
+                    f'<b>{group}</b><br>'
+                    f'Model: {model}<br>'
+                    f'N: {N} trials, {K} modes<br>'
+                    f'Mean E[TP]: {posterior_mean:.3f}'
+                    '<extra></extra>'
+                ),
             ))
 
             # Model marker above violin
@@ -280,7 +286,13 @@ def plot_dirichlet_progression_violin(
                         mode='lines',
                         line=dict(color='black', width=2),
                         showlegend=False,
-                        hoverinfo='skip',
+                        hovertemplate=(
+                            f'<b>Average (all tasks)</b><br>'
+                            f'Model: {model}<br>'
+                            f'N: {N} trials, {K_global} modes<br>'
+                            f'Mean E[TP]: {posterior_mean:.3f}'
+                            '<extra></extra>'
+                        ),
                     ))
 
                     marker = model_to_marker.get(model)

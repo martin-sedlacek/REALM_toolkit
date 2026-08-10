@@ -75,7 +75,8 @@ def plot_bayesian_violin(labels, successes, failures, colors, symbols=None, mode
             mode='lines',
             line=dict(color='black', width=2),
             showlegend=False,
-            hoverinfo='skip',
+            hovertemplate=f'{label}<br>Mean: {posterior_mean:.3f}<br>N: {S + F}<extra></extra>',
+            name=label,
         ))
 
         # Model marker above violin
